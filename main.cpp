@@ -20,6 +20,7 @@
 #include <math.h>
 #include <Eigen/Geometry>
 #include <numeric>
+#include <argparse.hpp>
 
 using namespace std;
 namespace fs = std::experimental::filesystem;
@@ -78,6 +79,69 @@ public:
     vector<float> src_norm;
     vector<float> ref_norm;
     double w;
+};
+
+struct Parameters {
+    std::string ref_path_, src_path_;
+    int ref_width_, ref_height_, src_width_, src_height_;
+    double GLOBAL_OFFSET_X_m_;
+    double GLOBAL_OFFSET_Y_m_;
+    double resolution_;
+    double ref_utm_bbox_[4];
+    double src_utm_bbox_[4];
+    double aoi_utm_bbox_[4];
+    int aoi_ref_bbox_pixel_[4];
+    int aoi_src_bbox_pixel_[4];
+    int num_tile_x_, num_tile_y_;
+    double tilesize_m_;
+    std::vector<TILE_INFO> tile_infos_all_, tile_infos_filter_, tile_infos_icp_;
+    double valid_ratio_threshold_, var_min_;
+    int verbose_;
+    // for General 
+    bool plane_or_not_;
+    bool multi_or_not_;
+    bool brute_force_search_or_not_;
+    double xmin_m_;
+    double xmax_m_;
+    double ymin_m_;
+    double ymax_m_;
+    double rough_step_m_;
+    int rough_step_min_resolution_;
+    int rough_num_mins_;
+    double fine_step_m_;
+    // for rough align
+    double valid_ratio_threshold_rough_;
+    double rough_rotation_[9];
+    double rough_translation_[3];
+    vector<vector<double>> rough_translations_;
+    double rough_icp_max_iter_;
+    double rough_icp_rmse_threshold_;
+    double trimmed_ratio_;
+    double rough_icp_percentage_threshold_;
+    double rough_rmse_;
+    // for fine align
+    double HARRIS_step_;
+    double HARRIS_k_;
+    double fine_translation_[3];
+    int n_blocks_col_;
+    int n_blocks_row_;
+    int num_filter_tiles_;
+    double fine_icp_max_iter_;
+    double fine_icp_rmse_threshold_;
+    double fine_icp_percentage_threshold_;
+    double fine_search_half_pixels_;
+    int fine_resolution_factor_;
+    double fine_rmse_;
+    double fine_rotation_[9];
+
+    double final_rot_[9];
+    double final_trans_[3];
+
+    // FOR rough align
+    int rough_num_pts_;
+    int search_half_size_pixel_;
+    std::vector<gs::Point> rough_src_pts_;
+    std::vector<std::pair<int, int>> rough_src_index_; // in source image pixel coordinates
 };
 
 void parse_shp(string shp_path, vector<string>& tif_paths, vector<double>& tif_bboxs) {
@@ -909,6 +973,238 @@ public:
         RMSE = sqrt(RMSE / (double)corrs.size());
         delete[] ref_search_area;
     }
+    
+    void FIND_MULTI_LINK_CORRESPONDENCE(vector<gs::Point> src_pts, Eigen::MatrixXd& corr_src, Eigen::MatrixXd& corr_dst, Eigen::VectorXd& corr_w,
+                                        int search_half_size_pixel, double percentage_threshold, bool multi_or_not,
+                                        int max_iter, double& RMSE, bool plane_or_not) {
+
+        RMSE = 0;
+        double utm_x, utm_y;
+        int grid_x, grid_y;
+        int search_xmin, search_xmax, search_ymax, search_ymin;
+        int search_width, search_height;
+        double* ref_search_area = new double[(2 * search_half_size_pixel + 1) * (2 * search_half_size_pixel + 1)];
+        double src_pts_num = src_pts.size();
+        double valid_src_pts = 0.0;
+        std::vector<CORR> corrs;
+        for (int i = 0; i < src_pts.size(); ++i) {
+            gs::Point src_pt = src_pts[i];
+
+            utm_x = src_pt.pos[0];
+            utm_y = src_pt.pos[1];
+            grid_x = floor((utm_x - ref_utm_bbox_[0] + 0.25) / resolution_);
+            grid_y = floor((ref_utm_bbox_[3] - utm_y + 0.25) / resolution_);
+            if (grid_x < 0 || grid_x >= ref_width_ || grid_y < 0 || grid_y >= ref_height_) {
+                continue;
+            }
+            search_xmin = grid_x - search_half_size_pixel;
+            search_xmax = grid_x + search_half_size_pixel;
+            search_ymin = grid_y - search_half_size_pixel;
+            search_ymax = grid_y + search_half_size_pixel;
+            search_xmin = (search_xmin < 0) ? 0 : search_xmin;
+            search_xmax = (search_xmax >= ref_width_) ? ref_width_ - 1 : search_xmax;
+            search_ymin = (search_ymin < 0) ? 0 : search_ymin;
+            search_ymax = (search_ymax >= ref_height_) ? ref_height_ - 1 : search_ymax;
+            search_width = search_xmax - search_xmin + 1;
+            search_height = search_ymax - search_ymin + 1;
+
+
+            ref_band_->RasterIO(GF_Read, search_xmin, search_ymin,
+                search_width, search_height,
+                ref_search_area, search_width, search_height, GDT_Float64, 0, 0);
+            int best_row = 0;
+            int best_col = 0;
+            double best_dis = 9999;
+            double cur_dis;
+            double ref_x, ref_y, ref_z;
+            int valid_cnt = 0;
+            double valid_ratio = 0;
+            double sum_guass = 0;
+            double guass = 0;
+            double percentage = 0;
+            int idx = 0;
+            vector<int> candidate_index_index;
+            std::vector<pair<double, int>> candidate_index;
+            for (int row = 1; row < search_height - 1; ++row) {
+                for (int col = 1; col < search_width - 1; ++col) {
+                    idx = col + row * search_width;
+                    if (isnan(ref_search_area[idx])) {
+                        continue;
+                    }
+                    if (plane_or_not && (isnan(ref_search_area[idx - 1]) ||
+                        isnan(ref_search_area[idx + 1]) ||
+                        isnan(ref_search_area[idx - search_width]) ||
+                        isnan(ref_search_area[idx + search_width]))) {
+                        continue;
+                    }
+                    valid_cnt++;
+                    ref_x = ref_utm_bbox_[0] + (search_xmin + col) * resolution_;
+                    ref_y = ref_utm_bbox_[3] - (search_ymin + row) * resolution_;
+                    ref_z = ref_search_area[idx];
+                    cur_dis = pow(src_pt.pos[0] - ref_x, 2.0) + pow(src_pt.pos[1] - ref_y, 2.0) + pow(src_pt.pos[2] - ref_z, 2.0);
+                    guass = exp(-cur_dis);
+                    //sum_guass += guass;
+                    candidate_index.push_back(make_pair(guass, idx));
+                    if (cur_dis < best_dis) {
+                        best_row = row;
+                        best_col = col;
+                        best_dis = cur_dis;
+                    }
+                }
+            }
+            valid_ratio = (double)valid_cnt / (double)(search_width * search_height);
+            if (valid_ratio < valid_ratio_threshold_rough_) { continue; }
+            // start go multi-correspondence
+            if (multi_or_not) {
+                sort(candidate_index.begin(), candidate_index.end(), cmp_descend_double);
+                int col, row;
+                sum_guass = 0.0;
+                //num_multi_link = candidate_index.size();
+                for (int iter = 0; iter < candidate_index.size(); ++iter) {
+                    guass = candidate_index[iter].first;
+                    sum_guass += guass;
+                }
+                for (int iter = 0; iter < candidate_index.size(); ++iter) {
+                    col = candidate_index[iter].second % search_width;
+                    row = candidate_index[iter].second / search_width;
+                    guass = candidate_index[iter].first;
+                    percentage = guass / sum_guass;
+                    if (percentage < percentage_threshold || isnan(ref_search_area[candidate_index[iter].second]) || isnan(guass)) {
+                        continue;
+                    }
+                    candidate_index_index.push_back(iter);
+                }
+                sum_guass = 0.0;
+                for (int iter = 0; iter < candidate_index_index.size(); ++iter) {
+                    guass = candidate_index[candidate_index_index[iter]].first;
+                    sum_guass += guass;
+                }
+                if (sum_guass < 1e-5) {
+                    continue;
+                }
+                for (int iter = 0; iter < candidate_index_index.size(); ++iter) {
+                    idx = candidate_index_index[iter];
+                    col = candidate_index[idx].second % search_width;
+                    row = candidate_index[idx].second / search_width;
+                    ref_x = ref_utm_bbox_[0] + (search_xmin + col) * resolution_;
+                    ref_y = ref_utm_bbox_[3] - (search_ymin + row) * resolution_;
+                    gs::Point ref_pt(ref_x,
+                        ref_y,
+                        ref_search_area[candidate_index[idx].second]);
+                    guass = candidate_index[idx].first;
+                    CORR corr;
+                    if (plane_or_not) {
+                        float ref_dx, ref_dy, ref_dz, magnitude;
+                        vector<float> src_norm, ref_norm;
+                        ref_dx = (ref_search_area[candidate_index[idx].second + 1] - ref_search_area[candidate_index[idx].second - 1]) / 2.0;
+                        ref_dy = (ref_search_area[candidate_index[idx].second - search_width] - ref_search_area[candidate_index[idx].second + search_width]) / 2.0;
+                        magnitude = sqrt(pow(ref_dx, 2.0) + pow(ref_dy, 2) + 1);
+                        ref_dx /= magnitude;
+                        ref_dy /= magnitude;
+                        ref_dz = 1.0 / magnitude;
+                        ref_norm.push_back(ref_dx);
+                        ref_norm.push_back(ref_dy);
+                        ref_norm.push_back(ref_dz);
+                        corr.ref = ref_pt;
+                        corr.src = src_pt;
+                        corr.ref_norm = ref_norm;
+                        corr.w = guass / sum_guass;
+                    }
+                    else {
+                        corr.ref = ref_pt;
+                        corr.src = src_pt;
+                        corr.w = guass / sum_guass;
+                    }
+
+                    corrs.push_back(corr);
+                }
+                valid_src_pts++;
+            }
+            else {
+                if (best_dis == 9999) {
+                    continue;
+                }
+                gs::Point ref_pt(ref_utm_bbox_[0] + (search_xmin + best_col) * resolution_,
+                    ref_utm_bbox_[3] - (search_ymin + best_row) * resolution_,
+                    ref_search_area[best_col + best_row * search_width]);
+                CORR corr;
+                if (plane_or_not) {
+                    float ref_dx, ref_dy, ref_dz, magnitude;
+                    vector<float> src_norm, ref_norm;
+                    ref_dx = (ref_search_area[best_col + 1 + best_row * search_width] - ref_search_area[best_col - 1 + best_row * search_width] / 2.0);
+                    ref_dy = (ref_search_area[best_col + (best_row - 1) * search_width] - ref_search_area[best_col + (best_row + 1) * search_width] / 2.0);
+                    magnitude = sqrt(pow(ref_dx, 2.0) + pow(ref_dy, 2) + 1);
+                    ref_dx /= magnitude;
+                    ref_dy /= magnitude;
+                    ref_dz = 1.0 / magnitude;
+                    ref_norm.push_back(ref_dx);
+                    ref_norm.push_back(ref_dy);
+                    ref_norm.push_back(ref_dz);
+                    corr.ref = ref_pt;
+                    corr.src = src_pt;
+                    corr.ref_norm = ref_norm;
+                    corr.w = 1;
+                }
+                else {
+                    corr.ref = ref_pt;
+                    corr.src = src_pt;
+                    corr.w = 1;
+                }
+                corrs.push_back(corr);
+                valid_src_pts++;
+            }
+        }
+        //reweight the corr
+        for (int i = 0; i < corrs.size(); ++i) {
+            corrs[i].w /= valid_src_pts;
+        }
+        // reject outlier
+        if (!multi_or_not) {
+            CORR_REJECTOR1(corrs, 1.0);
+        }
+
+        //compute rmse
+        if (plane_or_not) {
+            for (int i = 0; i < corrs.size(); ++i) {
+                RMSE += corrs[i].w * (
+                    pow((corrs[i].src.pos[0] - corrs[i].ref.pos[0]) * corrs[i].ref_norm[0], 2) +
+                    pow((corrs[i].src.pos[1] - corrs[i].ref.pos[1]) * corrs[i].ref_norm[1], 2) +
+                    pow((corrs[i].src.pos[2] - corrs[i].ref.pos[2]) * corrs[i].ref_norm[2], 2)
+                    );
+            }
+            RMSE = sqrt(RMSE);
+        }
+        else {
+            for (int i = 0; i < corrs.size(); ++i) {
+                RMSE += corrs[i].w * (pow(corrs[i].src.pos[0] - corrs[i].ref.pos[0], 2.0) +
+                    pow(corrs[i].src.pos[1] - corrs[i].ref.pos[1], 2.0) +
+                    pow(corrs[i].src.pos[2] - corrs[i].ref.pos[2], 2.0));
+            }
+            RMSE = sqrt(RMSE);
+        }
+        if (corrs.size() == 0) {
+            RMSE = 9999;
+        }
+
+        //transform to eigen type
+        corr_src.resize(3,corrs.size());
+        corr_dst.resize(3,corrs.size());
+        corr_w.resize(corrs.size());
+        for (int i = 0; i < corrs.size(); ++i) {
+            corr_src(0,i) = corrs[i].src.pos[0];
+            corr_src(1,i) = corrs[i].src.pos[1];
+            corr_src(2,i) = corrs[i].src.pos[2];
+            corr_dst(0,i) = corrs[i].ref.pos[0];
+            corr_dst(1,i) = corrs[i].ref.pos[1];
+            corr_dst(2,i) = corrs[i].ref.pos[2];
+            corr_w(i) = corrs[i].w;
+        }
+
+
+        delete[] ref_search_area;
+    }
+
+
     void FIND_MULTI_LINK_CORRESPONDENCE(std::vector<gs::Point>& src_pts,std::vector<CORR>& corrs, 
                                         int search_half_size_pixel, double percentage_threshold,bool multi_or_not, 
                                         int max_iter, double& RMSE, bool plane_or_not) {
@@ -1129,6 +1425,44 @@ public:
         delete[] ref_search_area;
     }
     
+
+    /// <summary>
+    /// 
+    /// </summary>
+    /// <param name="X">source points, 3xN</param>
+    /// <param name="Y">target points, 3xN</param>
+    /// <param name="W">weight, N</param>
+    /// <param name="R">estimate rotation, 3x3</param>
+    /// <param name="T">estimate translation, 3</param>
+    void ESTIMATE_TRANSFORMATION_WEIGHTED_CORRS(Eigen::MatrixXd& X, Eigen::MatrixXd& Y, Eigen::VectorXd& W, 
+                                                Eigen::Matrix3d& R, Eigen::Vector3d& T) {
+        int dim = X.rows();
+        /// Normalize weight vector
+        Eigen::VectorXd w_normalized = W / W.sum();
+        /// De-mean
+        Eigen::VectorXd X_mean(dim), Y_mean(dim);
+        for (int i = 0; i < dim; ++i) {
+            X_mean(i) = (X.row(i).array() * w_normalized.transpose().array()).sum();
+            Y_mean(i) = (Y.row(i).array() * w_normalized.transpose().array()).sum();
+        }
+        X.colwise() -= X_mean;
+        Y.colwise() -= Y_mean;
+
+        /// Compute transformation
+        Eigen::MatrixXd sigma = X * w_normalized.asDiagonal() * Y.transpose();
+        Eigen::JacobiSVD<Eigen::MatrixXd> svd(sigma, Eigen::ComputeFullU | Eigen::ComputeFullV);
+        if (svd.matrixU().determinant() * svd.matrixV().determinant() < 0.0) {
+            Eigen::VectorXd S = Eigen::VectorXd::Ones(dim); S(dim - 1) = -1.0;
+            R = svd.matrixV() * S.asDiagonal() * svd.matrixU().transpose();
+        }
+        else {
+            R = svd.matrixV() * svd.matrixU().transpose();
+        }
+        T = Y_mean - R * X_mean;
+        /// Re-apply mean
+        X.colwise() += X_mean;
+        Y.colwise() += Y_mean;
+    }
 
     void ESTIMATE_TRANSFORMATION_WEIGHTED_CORRS(std::vector<CORR>& corrs, double* rotation, double* translation, bool plane_or_not) {
 		gs::initDiagonal(rotation);
@@ -1521,7 +1855,6 @@ public:
                 rough_src_index_.push_back(make_pair(grid_x, grid_y));
                 gs::Point src_pt(utm_x, utm_y, *pts_z);
                 rough_src_pts_.push_back(src_pt);
-
             }
         }
         delete[] pts_z;
@@ -2098,9 +2431,10 @@ public:
     
     void MULTI_ICP(std::vector<gs::Point> src_pts,int search_half_pixels,double percentage_threshold,bool multi_or_not,int max_iter,double rmse_threshold,double* rot_out,double* trans_out,double plane_or_not,double& final_rmse,string debug_path) {
 		update_ptcloud(src_pts, rot_out, trans_out, 0, 0, 0, 0);
-		std::vector<CORR> corrs;
+        Eigen::MatrixXd X, Y;
+        Eigen::VectorXd W;
         double corr_rmse = 0;
-        FIND_MULTI_LINK_CORRESPONDENCE(src_pts,corrs,search_half_pixels,percentage_threshold,multi_or_not,max_iter,corr_rmse,plane_or_not);
+        FIND_MULTI_LINK_CORRESPONDENCE(src_pts,X,Y,W,search_half_pixels,percentage_threshold,multi_or_not,max_iter,corr_rmse,plane_or_not);
         final_rmse = corr_rmse;
         //write_ptcloud_corrs(corrs, "N:\\tasks\\reg\\ref_pts.txt", "N:\\tasks\\reg\\src_pts.txt");
         //Estmate Transformation
@@ -2109,14 +2443,30 @@ public:
             ofs.open(debug_path);
         }
         for (int iter = 0; iter < max_iter; ++iter) {
-            std::cout << std::setprecision(11) << "ICP #Iteration: " << iter << "# corrs: " << corrs.size() << " RMSE: " << corr_rmse <<"Trans: "<<trans_out[0]<<","<<trans_out[1]<<","<<trans_out[2]<< std::endl;
+            std::cout << std::setprecision(11) << "ICP #Iteration: " << iter << "# corrs: " << X.rows() << " RMSE: " << corr_rmse <<"Trans: "<<trans_out[0]<<","<<trans_out[1]<<","<<trans_out[2]<< std::endl;
             if (debug_path != "" && verbose_>0) {
                 ofs << std::setprecision(11)<< corr_rmse << " " << trans_out[0] <<" "<<trans_out[1] <<" "<<trans_out[2] << std::endl;
             }
-
+            Eigen::Matrix3d R;
+            Eigen::Vector3d T;
             double rotation[9];
             double translation[3];
-            ESTIMATE_TRANSFORMATION_WEIGHTED_CORRS(corrs, rotation, translation,plane_or_not);
+            ESTIMATE_TRANSFORMATION_WEIGHTED_CORRS(X, Y, W, R, T);
+            //ESTIMATE_TRANSFORMATION_WEIGHTED_CORRS(corrs, rotation, translation,plane_or_not);
+            rotation[0] = R(0, 0);
+            rotation[1] = R(0, 1);
+            rotation[2] = R(0, 2);
+            rotation[3] = R(1, 0);
+            rotation[4] = R(1, 1);
+            rotation[5] = R(1, 2);
+            rotation[6] = R(2, 0);
+            rotation[7] = R(2, 1);
+            rotation[8] = R(2, 2);
+            translation[0] = T(0);
+            translation[1] = T(1);
+            translation[2] = T(2);
+
+
             double tmp[9];
             double tmp_vec3[3];
             gs::matrixMult(rotation, rot_out, tmp);
@@ -2131,7 +2481,23 @@ public:
 
             // FInd correspondence
             double pre_rmse = corr_rmse;
-            FIND_MULTI_LINK_CORRESPONDENCE(src_pts, corrs, search_half_pixels,percentage_threshold, multi_or_not, max_iter, corr_rmse,plane_or_not);
+            //FIND_MULTI_LINK_CORRESPONDENCE(src_pts, corrs, search_half_pixels,percentage_threshold, multi_or_not, max_iter, corr_rmse,plane_or_not);
+            FIND_MULTI_LINK_CORRESPONDENCE(src_pts, X, Y, W, search_half_pixels, percentage_threshold, multi_or_not, max_iter, corr_rmse, plane_or_not);
+            //debug
+            //if (iter == 0) {
+            //    string out_file = "J:\\xuningli\\3DDataRegistration\\REG\\dsm_reg\\out\\corr.txt";
+            //    ofstream ofs1(out_file);
+
+            //    for (int i = 0; i < corrs.size(); ++i) {
+            //        std::stringstream ss;
+            //        ss << corrs[i].src.pos[0] << " " << corrs[i].src.pos[1] << " " << corrs[i].src.pos[2] << " " << corrs[i].ref.pos[0] << " " << corrs[i].ref.pos[1] << " " << corrs[i].ref.pos[2] << "\n";
+            //        string line = ss.str();
+            //        ss.clear();
+            //        ofs1<<line;
+            //    }
+            //    ofs1.close();
+            //}
+
 
             if (abs(pre_rmse - corr_rmse) < rmse_threshold) {
                 final_rmse = (corr_rmse < final_rmse) ? corr_rmse : final_rmse;
@@ -2780,6 +3146,26 @@ void DSM_REG_v1(std::string dsm_ref_path, std::string dsm_src_path) {
 //}
 
 int main(int argc, char* argv[]) {
+    //argparse::ArgumentParser program("Large-scale DSM registration based on ICP");
+    //program.add_argument("-src").required().help("source/moving DSM file");
+    //program.add_argument("-dst").required().help("reference/fixed DSM file");
+
+
+    //try {
+    //    program.parse_args(argc, argv);    // Example: ./main --color orange
+    //}
+    //catch (const std::runtime_error& err) {
+    //    std::cerr << err.what() << std::endl;
+    //    std::cerr << program;
+    //    std::exit(1);
+    //}
+
+
+    //std::string src_file= program.get<std::string>("-src");
+    //std::string dst_file = program.get<std::string>("-dst");
+    //int a = 0;
+
+
     if (argc != 4) {
         std::cout << "USAGE: reg.exe [0: LiDAR-SAT, 1:small-scale SAT-SAT,2: general(high time cost), 3: no registration, only apply init transform to src_dsm, 4: only estimation translation ] [reference_dsm_path] source_dsm_path init_trans_file" << std::endl;
         return 0;
@@ -2843,6 +3229,11 @@ int main(int argc, char* argv[]) {
     else if (mode == "4") {
         SATDSM_REG_only_translation(argv[2], argv[3]);
     }
+
+
+
+
+
     //
     
     //using namespace gs;
