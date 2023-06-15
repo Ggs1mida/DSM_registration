@@ -9,7 +9,7 @@ It is tested on windows 10, visual studio 2019, c++ 17 (required for argparse.hp
 Library: eigen, GDAL
 
 # Usage
-reg.exe -src source.tif -dst reference.tif
+reg.exe -src source.tif -dst reference.tif  
 Support rigid transformation (6DoF) and translation (3DoF).
 
 ![usage](https://github.com/Ggs1mida/DSM_registration/assets/32317924/07c12b67-e692-4e91-bc76-893eeca6c1ba)
