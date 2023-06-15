@@ -2512,8 +2512,8 @@ int main(int argc, char* argv[]) {
     argparse::ArgumentParser program("Large-scale DSM registration based on two-stage (rough, fine) ICP, registered result will be in the same folder of src file");
     program.add_argument("-src").required().help("source/moving DSM file");
     program.add_argument("-dst").required().help("reference/fixed DSM file");
-    program.add_argument("-src_reso").default_value(0.5).help("source/moving DSM resolution");
-    program.add_argument("-dst_reso").default_value(0.5).help("reference/fixed DSM resolution");
+    program.add_argument("-src_reso").default_value(0.5).help("source/moving DSM resolution").scan<'g', double>();
+    program.add_argument("-dst_reso").default_value(0.5).help("reference/fixed DSM resolution").scan<'g', double>();
     program.add_argument("-rough_icp_max_iter").default_value(50).help("Rough registration using ICP: maximum number of iterations").scan<'d',int>();
     program.add_argument("-rough_icp_rmse_threshold").default_value(1e-3).help("Rough registration using ICP: rmse threshold for stop").scan<'g', double>();
     program.add_argument("-fine_icp_max_iter").default_value(150).help("Fine registration using ICP: maximum number of iterations ").scan<'d', int>();
