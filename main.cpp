@@ -82,66 +82,48 @@ public:
 };
 
 struct Parameters {
+    std::string type_ = "rigid";
     std::string ref_path_, src_path_;
-    int ref_width_, ref_height_, src_width_, src_height_;
-    double GLOBAL_OFFSET_X_m_;
-    double GLOBAL_OFFSET_Y_m_;
-    double resolution_;
-    double ref_utm_bbox_[4];
-    double src_utm_bbox_[4];
-    double aoi_utm_bbox_[4];
-    int aoi_ref_bbox_pixel_[4];
-    int aoi_src_bbox_pixel_[4];
-    int num_tile_x_, num_tile_y_;
-    double tilesize_m_;
-    std::vector<TILE_INFO> tile_infos_all_, tile_infos_filter_, tile_infos_icp_;
-    double valid_ratio_threshold_, var_min_;
-    int verbose_;
+    double valid_ratio_threshold_ = 0.5;
+    double var_min_=4.0;
+    int verbose_=1;
     // for General 
-    bool plane_or_not_;
-    bool multi_or_not_;
-    bool brute_force_search_or_not_;
-    double xmin_m_;
-    double xmax_m_;
-    double ymin_m_;
-    double ymax_m_;
-    double rough_step_m_;
-    int rough_step_min_resolution_;
-    int rough_num_mins_;
-    double fine_step_m_;
+    double src_resolution_ = 0.5;
+    double ref_resolution_ = 0.5;
+    bool plane_or_not_=false;
+    bool multi_or_not_=false;
+    bool brute_force_search_or_not_=false;
+    double xmin_m_=-3; // for brute-force search bounding
+    double xmax_m_=3;
+    double ymin_m_=-3;
+    double ymax_m_=3;
+    double rough_step_m_=0.5;
+    int rough_step_min_resolution_=3; //local_minimal_within_range=rough_step_min_resolution_*rough_step_m_
+    int rough_num_mins_=3; // number of local minimal
+    double fine_step_m_=0.5;
+
     // for rough align
-    double valid_ratio_threshold_rough_;
-    double rough_rotation_[9];
-    double rough_translation_[3];
-    vector<vector<double>> rough_translations_;
-    double rough_icp_max_iter_;
-    double rough_icp_rmse_threshold_;
-    double trimmed_ratio_;
-    double rough_icp_percentage_threshold_;
-    double rough_rmse_;
+    int rough_num_pts_ = 24000;
+    int search_half_size_pixel_ = 20;
+    double valid_ratio_threshold_rough_=0.5;
+    double rough_icp_max_iter_=200;
+    double rough_icp_rmse_threshold_=1e-5;
+    double trimmed_ratio_=0.9;
+    double rough_icp_percentage_threshold_=1e-5;
+
     // for fine align
-    double HARRIS_step_;
-    double HARRIS_k_;
-    double fine_translation_[3];
-    int n_blocks_col_;
-    int n_blocks_row_;
-    int num_filter_tiles_;
-    double fine_icp_max_iter_;
-    double fine_icp_rmse_threshold_;
-    double fine_icp_percentage_threshold_;
-    double fine_search_half_pixels_;
-    int fine_resolution_factor_;
-    double fine_rmse_;
-    double fine_rotation_[9];
+    double tilesize_m_ = 100;
+    double HARRIS_step_=3;
+    double HARRIS_k_=0.05;
+    int n_blocks_col_=5;
+    int n_blocks_row_=5;
+    int num_filter_tiles_=100;
+    double fine_icp_max_iter_=200;
+    double fine_icp_rmse_threshold_=1e-5;
+    double fine_icp_percentage_threshold_=1e-5;
+    double fine_search_half_pixels_=10;
+    int fine_resolution_factor_=5;
 
-    double final_rot_[9];
-    double final_trans_[3];
-
-    // FOR rough align
-    int rough_num_pts_;
-    int search_half_size_pixel_;
-    std::vector<gs::Point> rough_src_pts_;
-    std::vector<std::pair<int, int>> rough_src_index_; // in source image pixel coordinates
 };
 
 void parse_shp(string shp_path, vector<string>& tif_paths, vector<double>& tif_bboxs) {
@@ -292,16 +274,18 @@ void convert_ptcloud(double* data, int width, int height,double resolution,int r
 
 }
 
-void update_ptcloud(vector<gs::Point>& ptcloud, double* rot, double* trans,double offx_in,double offy_in,double offx_rot,double offy_rot) {
+void update_ptcloud(vector<gs::Point>& ptcloud, Eigen::Matrix4d T,double offx_in,double offy_in,double offx_rot,double offy_rot) {
     double tmp[3];
     for (int i = 0; i < ptcloud.size(); ++i) {
         ptcloud[i].pos[0] = ptcloud[i].pos[0] + offx_in - offx_rot;
         ptcloud[i].pos[1] = ptcloud[i].pos[1] + offy_in - offy_rot;
+        Eigen::Vector4d pt(ptcloud[i].pos[0], ptcloud[i].pos[1], ptcloud[i].pos[2], 1);
+        pt = T * pt;
 
-        gs::rotate_mat(ptcloud[i].pos, rot, tmp);
-        ptcloud[i].pos[0] = tmp[0] + trans[0];
-        ptcloud[i].pos[1] = tmp[1] + trans[1];
-        ptcloud[i].pos[2] = tmp[2] + trans[2];
+        //gs::rotate_mat(ptcloud[i].pos, rot, tmp);
+        ptcloud[i].pos[0] = pt(0);
+        ptcloud[i].pos[1] = pt(1);
+        ptcloud[i].pos[2] = pt(2);
         
         ptcloud[i].pos[0] = ptcloud[i].pos[0]+offx_rot - offx_in;
         ptcloud[i].pos[1] = ptcloud[i].pos[1]+offy_rot - offy_in;
@@ -692,46 +676,12 @@ void create_dsm(string out_path) {
 class DSM_REG {
 public:
 
-    DSM_REG(std::string ref_path, std::string src_path) {
-        //General 
-        plane_or_not_ = false;
-        multi_or_not_ = false;
-        brute_force_search_or_not_ = false;
-        xmin_m_ = -3; // for brute-force search bounding
-        xmax_m_ = 3;
-        ymin_m_ = -3;
-        ymax_m_ = 3;
-        rough_step_m_ = 0.5;
-        rough_step_min_resolution_ = 3; //local_minimal_within_range=rough_step_min_resolution_*rough_step_m_
-        rough_num_mins_ = 3; // number of local minimal
-        fine_step_m_= 0.5;
-        verbose_ = 1;
-        //Rough
+    DSM_REG(Parameters par) {
+        par_ = par;
 
-        rough_icp_percentage_threshold_ = 1e-5;
-        valid_ratio_threshold_rough_ = 0.5;
-        rough_num_pts_ = 24000;
-        search_half_size_pixel_ = 20;
-        trimmed_ratio_ = 0.6;
-        rough_icp_rmse_threshold_ = 1e-5;
-        rough_icp_max_iter_ = 500;
-        // Fine
-        n_blocks_col_ = 5;
-        n_blocks_row_ = 5;
-        fine_resolution_factor_ = 5;
-        fine_search_half_pixels_ = 10;
-        fine_icp_rmse_threshold_ = 1e-5;
-        fine_icp_max_iter_ = 1500;
-        fine_icp_percentage_threshold_ = 1e-5;
-        num_filter_tiles_ = 100; // (>0) minimal is n_blocks_col_*n_blocks_row_*1
-        HARRIS_k_ = 0.05;
-        HARRIS_step_ = 3;
-        resolution_ = 0.5;
-        var_min_ = 4.0;
-        valid_ratio_threshold_ = 0.5;
-        tilesize_m_ = 100;
-        ref_path_ = ref_path;
-        src_path_ = src_path;
+        T_rough_ = Eigen::Matrix4d::Identity();
+        T_fine_ = Eigen::Matrix4d::Identity();
+        T_final_ = Eigen::Matrix4d::Identity();
         gs::initDiagonal(rough_rotation_);
         rough_translation_[0] = 0.0;
         rough_translation_[1] = 0.0;
@@ -739,12 +689,13 @@ public:
         fine_translation_[0] = 0.0;
         fine_translation_[1] = 0.0;
         fine_translation_[2] = 0.0;
+
         double transform[6];
         int xSize, ySize;
 
         GDALAllRegister();
         pdriver_ = GetGDALDriverManager()->GetDriverByName("GTiff");
-        ref_dataset_ = (GDALDataset*)GDALOpen(ref_path.c_str(), GA_ReadOnly);
+        ref_dataset_ = (GDALDataset*)GDALOpen(par_.ref_path_.c_str(), GA_ReadOnly);
         ref_dataset_->GetGeoTransform(transform);
         xSize = ref_dataset_->GetRasterXSize();
         ySize = ref_dataset_->GetRasterYSize();
@@ -758,7 +709,7 @@ public:
         GLOBAL_OFFSET_Y_m_ = transform[3];
 
 
-        src_dataset_ = (GDALDataset*)GDALOpen(src_path.c_str(), GA_ReadOnly);
+        src_dataset_ = (GDALDataset*)GDALOpen(par_.src_path_.c_str(), GA_ReadOnly);
         src_dataset_->GetGeoTransform(transform);
         xSize = src_dataset_->GetRasterXSize();
         ySize = src_dataset_->GetRasterYSize();
@@ -776,28 +727,27 @@ public:
 
         get_aoi_bbox_pixels(aoi_utm_bbox_, ref_utm_bbox_, src_utm_bbox_, ref_width_, ref_height_, src_width_, src_height_, aoi_ref_bbox_pixel_, aoi_src_bbox_pixel_);
 
-        num_tile_x_ = ceil((aoi_utm_bbox_[1] - aoi_utm_bbox_[0]) / tilesize_m_);
-        num_tile_y_ = ceil((aoi_utm_bbox_[3] - aoi_utm_bbox_[2]) / tilesize_m_);
+        num_tile_x_ = ceil((aoi_utm_bbox_[1] - aoi_utm_bbox_[0]) / par_.tilesize_m_);
+        num_tile_y_ = ceil((aoi_utm_bbox_[3] - aoi_utm_bbox_[2]) / par_.tilesize_m_);
 
         ref_band_ = ref_dataset_->GetRasterBand(1);
         src_band_ = src_dataset_->GetRasterBand(1);
-        std::cout << "################ DSM_REG Paras ################### " << std::endl;
-		std::cout << "ICP point-to-plane: " << plane_or_not_ << std::endl;
-        std::cout << "Rough Align Paras: "<< std::endl;
-        std::cout << "# Sampling Pts: "<< rough_num_pts_ << std::endl;
-        std::cout << "NN search half size (pixels): " << search_half_size_pixel_ << std::endl;
-        std::cout << "Valid Threshold: " << valid_ratio_threshold_rough_ << std::endl;
-        std::cout << "Rough ICP Max Iters: " << rough_icp_max_iter_ <<'\n'<< std::endl;
-        std::cout << "Fine Align Paras: " << std::endl;
-        std::cout << "# Filtered TIles: " << num_filter_tiles_ << std::endl;
-        std::cout << "Tiel size (m): " << tilesize_m_ << std::endl;
-        std::cout << "Variance Minimal Threshold: " << var_min_ << std::endl;
-        std::cout << "Valid Threshold: " << valid_ratio_threshold_ <<'\n'<< std::endl;
-
+  //      std::cout << "################ Parameters ################### " << std::endl;
+		//std::cout << "ICP point-to-plane: " << par.plane_or_not_ << std::endl;
+  //      std::cout << "Rough Align Paras: "<< std::endl;
+  //      std::cout << "# Sampling Pts: "<< par_.rough_num_pts_ << std::endl;
+  //      std::cout << "NN search half size (pixels): " << par_.search_half_size_pixel_ << std::endl;
+  //      std::cout << "Valid Threshold: " << par_.valid_ratio_threshold_rough_ << std::endl;
+  //      std::cout << "Rough ICP Max Iters: " << par_.rough_icp_max_iter_ <<'\n'<< std::endl;
+  //      std::cout << "Fine Align Paras: " << std::endl;
+  //      std::cout << "# Filtered TIles: " << par_.num_filter_tiles_ << std::endl;
+  //      std::cout << "Tile size (m): " << par_.tilesize_m_ << std::endl;
+  //      std::cout << "Variance Minimal Threshold: " << par_.var_min_ << std::endl;
+  //      std::cout << "Valid Threshold: " << par_.valid_ratio_threshold_ <<'\n'<< std::endl;
 
     };
 
-    std::string ref_path_, src_path_;
+    Parameters par_;
     GDALDriver* pdriver_;
     GDALDataset* ref_dataset_;
     GDALDataset* src_dataset_;
@@ -806,60 +756,30 @@ public:
     int ref_width_, ref_height_, src_width_, src_height_;
     double GLOBAL_OFFSET_X_m_;
     double GLOBAL_OFFSET_Y_m_;
-    double resolution_;
     double ref_utm_bbox_[4];
     double src_utm_bbox_[4];
     double aoi_utm_bbox_[4];
     int aoi_ref_bbox_pixel_[4];
     int aoi_src_bbox_pixel_[4];
     int num_tile_x_, num_tile_y_;
-    double tilesize_m_;
     std::vector<TILE_INFO> tile_infos_all_, tile_infos_filter_, tile_infos_icp_;
-    double valid_ratio_threshold_, var_min_;
-    int verbose_;
-    // for General 
-    bool plane_or_not_;
-    bool multi_or_not_;
-    bool brute_force_search_or_not_;
-    double xmin_m_;
-    double xmax_m_;
-    double ymin_m_;
-    double ymax_m_;
-    double rough_step_m_;
-    int rough_step_min_resolution_;
-    int rough_num_mins_;
-    double fine_step_m_;
+
     // for rough align
-    double valid_ratio_threshold_rough_;
+    Eigen::Matrix4d T_rough_;
     double rough_rotation_[9];
     double rough_translation_[3];
     vector<vector<double>> rough_translations_;
-    double rough_icp_max_iter_;
-    double rough_icp_rmse_threshold_;
-    double trimmed_ratio_;
-    double rough_icp_percentage_threshold_;
-    double rough_rmse_;
     // for fine align
-    double HARRIS_step_;
-    double HARRIS_k_;
+    Eigen::Matrix4d T_fine_;
     double fine_translation_[3];
-    int n_blocks_col_;
-    int n_blocks_row_;
-    int num_filter_tiles_;
-    double fine_icp_max_iter_;
-    double fine_icp_rmse_threshold_;
-    double fine_icp_percentage_threshold_;
-    double fine_search_half_pixels_;
-    int fine_resolution_factor_;
     double fine_rmse_;
     double fine_rotation_[9];
 
+    Eigen::Matrix4d T_final_;
 	double final_rot_[9];
 	double final_trans_[3];
 
     // FOR rough align
-    int rough_num_pts_;
-    int search_half_size_pixel_;
     std::vector<gs::Point> rough_src_pts_;
     std::vector<std::pair<int, int>> rough_src_index_; // in source image pixel coordinates
     
@@ -900,7 +820,7 @@ public:
         int grid_x, grid_y;
         int search_xmin, search_xmax, search_ymax, search_ymin;
         int search_width, search_height;
-        double* ref_search_area = new double[(2*search_half_size_pixel_+1)* (2 * search_half_size_pixel_ + 1)];
+        double* ref_search_area = new double[(2* par_.search_half_size_pixel_+1)* (2 * par_.search_half_size_pixel_ + 1)];
         for (int i = 0; i < rough_src_pts_.size(); ++i) {
             gs::Point src_pts;
             src_pts.pos[0] = rough_src_pts_[i].pos[0];
@@ -908,15 +828,15 @@ public:
             src_pts.pos[2] = rough_src_pts_[i].pos[2];
             utm_x = src_pts.pos[0];
             utm_y = src_pts.pos[1];
-            grid_x = floor((utm_x - ref_utm_bbox_[0] + 0.25) / resolution_);
-            grid_y = floor((ref_utm_bbox_[3] - utm_y + 0.25) / resolution_);
+            grid_x = floor((utm_x - ref_utm_bbox_[0] + 0.25) / par_.ref_resolution_);
+            grid_y = floor((ref_utm_bbox_[3] - utm_y + 0.25) / par_.ref_resolution_);
             if (grid_x < 0 || grid_x >= ref_width_ || grid_y < 0 || grid_y >= ref_height_) {
                 continue;
             }
-            search_xmin = grid_x - search_half_size_pixel_;
-            search_xmax = grid_x + search_half_size_pixel_;
-            search_ymin = grid_y - search_half_size_pixel_;
-            search_ymax = grid_y + search_half_size_pixel_;
+            search_xmin = grid_x - par_.search_half_size_pixel_;
+            search_xmax = grid_x + par_.search_half_size_pixel_;
+            search_ymin = grid_y - par_.search_half_size_pixel_;
+            search_ymax = grid_y + par_.search_half_size_pixel_;
             search_xmin = (search_xmin < 0) ? 0 : search_xmin;
             search_xmax = (search_xmax >= ref_width_) ? ref_width_-1 : search_xmax;
             search_ymin = (search_ymin < 0) ? 0 : search_ymin;
@@ -941,8 +861,8 @@ public:
                         continue;
                     }
                     valid_cnt++;
-                    ref_x = ref_utm_bbox_[0] + (search_xmin+ col) * resolution_;
-                    ref_y = ref_utm_bbox_[3] - (search_ymin+ row) * resolution_;
+                    ref_x = ref_utm_bbox_[0] + (search_xmin+ col) * par_.ref_resolution_;
+                    ref_y = ref_utm_bbox_[3] - (search_ymin+ row) * par_.ref_resolution_;
 
                     cur_dis = pow(src_pts.pos[0] - ref_x, 2.0) + pow(src_pts.pos[1] - ref_y, 2.0) + pow(src_pts.pos[2] - ref_search_area[col + row * search_width], 2.0);
                     if (cur_dis < best_dis) {
@@ -953,11 +873,11 @@ public:
                 }
             }
             valid_ratio = (double)valid_cnt / (double)(search_width*search_height);
-            if (best_dis == 9999 || valid_ratio < valid_ratio_threshold_rough_) {
+            if (best_dis == 9999 || valid_ratio < par_.valid_ratio_threshold_rough_) {
                 continue;
             }
-            gs::Point ref_pts(ref_utm_bbox_[0] + (search_xmin + best_col) * resolution_,
-                ref_utm_bbox_[3] - (search_ymin + best_row) * resolution_,
+            gs::Point ref_pts(ref_utm_bbox_[0] + (search_xmin + best_col) * par_.ref_resolution_,
+                ref_utm_bbox_[3] - (search_ymin + best_row) * par_.ref_resolution_,
                 ref_search_area[best_col + best_row * search_width]);
             corrs.push_back(make_pair(src_pts,ref_pts));
             
@@ -992,8 +912,8 @@ public:
 
             utm_x = src_pt.pos[0];
             utm_y = src_pt.pos[1];
-            grid_x = floor((utm_x - ref_utm_bbox_[0] + 0.25) / resolution_);
-            grid_y = floor((ref_utm_bbox_[3] - utm_y + 0.25) / resolution_);
+            grid_x = floor((utm_x - ref_utm_bbox_[0] + 0.25) / par_.ref_resolution_);
+            grid_y = floor((ref_utm_bbox_[3] - utm_y + 0.25) / par_.ref_resolution_);
             if (grid_x < 0 || grid_x >= ref_width_ || grid_y < 0 || grid_y >= ref_height_) {
                 continue;
             }
@@ -1038,8 +958,8 @@ public:
                         continue;
                     }
                     valid_cnt++;
-                    ref_x = ref_utm_bbox_[0] + (search_xmin + col) * resolution_;
-                    ref_y = ref_utm_bbox_[3] - (search_ymin + row) * resolution_;
+                    ref_x = ref_utm_bbox_[0] + (search_xmin + col) * par_.ref_resolution_;
+                    ref_y = ref_utm_bbox_[3] - (search_ymin + row) * par_.ref_resolution_;
                     ref_z = ref_search_area[idx];
                     cur_dis = pow(src_pt.pos[0] - ref_x, 2.0) + pow(src_pt.pos[1] - ref_y, 2.0) + pow(src_pt.pos[2] - ref_z, 2.0);
                     guass = exp(-cur_dis);
@@ -1053,7 +973,7 @@ public:
                 }
             }
             valid_ratio = (double)valid_cnt / (double)(search_width * search_height);
-            if (valid_ratio < valid_ratio_threshold_rough_) { continue; }
+            if (valid_ratio < par_.valid_ratio_threshold_rough_) { continue; }
             // start go multi-correspondence
             if (multi_or_not) {
                 sort(candidate_index.begin(), candidate_index.end(), cmp_descend_double);
@@ -1086,8 +1006,8 @@ public:
                     idx = candidate_index_index[iter];
                     col = candidate_index[idx].second % search_width;
                     row = candidate_index[idx].second / search_width;
-                    ref_x = ref_utm_bbox_[0] + (search_xmin + col) * resolution_;
-                    ref_y = ref_utm_bbox_[3] - (search_ymin + row) * resolution_;
+                    ref_x = ref_utm_bbox_[0] + (search_xmin + col) * par_.ref_resolution_;
+                    ref_y = ref_utm_bbox_[3] - (search_ymin + row) * par_.ref_resolution_;
                     gs::Point ref_pt(ref_x,
                         ref_y,
                         ref_search_area[candidate_index[idx].second]);
@@ -1124,8 +1044,8 @@ public:
                 if (best_dis == 9999) {
                     continue;
                 }
-                gs::Point ref_pt(ref_utm_bbox_[0] + (search_xmin + best_col) * resolution_,
-                    ref_utm_bbox_[3] - (search_ymin + best_row) * resolution_,
+                gs::Point ref_pt(ref_utm_bbox_[0] + (search_xmin + best_col) * par_.ref_resolution_,
+                    ref_utm_bbox_[3] - (search_ymin + best_row) * par_.ref_resolution_,
                     ref_search_area[best_col + best_row * search_width]);
                 CORR corr;
                 if (plane_or_not) {
@@ -1205,227 +1125,6 @@ public:
     }
 
 
-    void FIND_MULTI_LINK_CORRESPONDENCE(std::vector<gs::Point>& src_pts,std::vector<CORR>& corrs, 
-                                        int search_half_size_pixel, double percentage_threshold,bool multi_or_not, 
-                                        int max_iter, double& RMSE, bool plane_or_not) {
-        //clear corrs
-        corrs.clear();
-        RMSE = 0;
-        double utm_x, utm_y;
-        int grid_x, grid_y;
-        int search_xmin, search_xmax, search_ymax, search_ymin;
-        int search_width, search_height;
-        double* ref_search_area = new double[(2 * search_half_size_pixel + 1) * (2 * search_half_size_pixel + 1)];
-        double src_pts_num = src_pts.size();
-        double valid_src_pts = 0.0;
-        for (int i = 0; i < src_pts.size(); ++i) {
-            gs::Point src_pt= src_pts[i];
-            utm_x = src_pt.pos[0];
-            utm_y = src_pt.pos[1];
-            grid_x = floor((utm_x - ref_utm_bbox_[0] + 0.25) / resolution_);
-            grid_y = floor((ref_utm_bbox_[3] - utm_y + 0.25) / resolution_);
-            if (grid_x < 0 || grid_x >= ref_width_ || grid_y < 0 || grid_y >= ref_height_) {
-                continue;
-            }
-            if (i == 1630) {
-                int a = 0;
-            }
-            search_xmin = grid_x - search_half_size_pixel;
-            search_xmax = grid_x + search_half_size_pixel;
-            search_ymin = grid_y - search_half_size_pixel;
-            search_ymax = grid_y + search_half_size_pixel;
-            search_xmin = (search_xmin < 0) ? 0 : search_xmin;
-            search_xmax = (search_xmax >= ref_width_) ? ref_width_ - 1 : search_xmax;
-            search_ymin = (search_ymin < 0) ? 0 : search_ymin;
-            search_ymax = (search_ymax >= ref_height_) ? ref_height_ - 1 : search_ymax;
-            search_width = search_xmax - search_xmin + 1;
-            search_height = search_ymax - search_ymin + 1;
-
-
-            ref_band_->RasterIO(GF_Read, search_xmin, search_ymin,
-                search_width, search_height,
-                ref_search_area, search_width, search_height, GDT_Float64, 0, 0);
-            int best_row = 0;
-            int best_col = 0;
-            double best_dis = 9999;
-            double cur_dis;
-            double ref_x, ref_y,ref_z;
-            int valid_cnt = 0;
-            double valid_ratio = 0;
-            double sum_guass = 0;
-            double guass = 0;
-            double percentage = 0;
-            int idx = 0;
-            vector<int> candidate_index_index;
-            std::vector<pair<double, int>> candidate_index;
-            for (int row = 1; row < search_height-1; ++row) {
-                for (int col = 1; col < search_width-1; ++col) {
-                    idx = col + row * search_width;
-					if (isnan(ref_search_area[idx])) {
-						continue;
-					}
-                    if (plane_or_not && (isnan(ref_search_area[idx-1]) || 
-										isnan(ref_search_area[idx+1]) || 
-										isnan(ref_search_area[idx-search_width]) || 
-										isnan(ref_search_area[idx+search_width]))) {
-                        continue;
-                    }
-                    valid_cnt++;
-                    ref_x = ref_utm_bbox_[0] + (search_xmin + col) * resolution_;
-                    ref_y = ref_utm_bbox_[3] - (search_ymin + row) * resolution_;
-                    ref_z = ref_search_area[idx];
-                    cur_dis = pow(src_pt.pos[0] - ref_x, 2.0) + pow(src_pt.pos[1] - ref_y, 2.0) + pow(src_pt.pos[2] - ref_z, 2.0);
-                    guass = exp(-cur_dis);
-                    //sum_guass += guass;
-                    candidate_index.push_back(make_pair(guass, idx));
-                    if (cur_dis < best_dis) {
-                        best_row = row;
-                        best_col = col;
-                        best_dis = cur_dis;
-                    }
-                }
-            }
-            valid_ratio = (double)valid_cnt / (double)(search_width * search_height);
-            if (valid_ratio < valid_ratio_threshold_rough_) { continue; }
-            // start go multi-correspondence
-            if (multi_or_not) {
-                sort(candidate_index.begin(), candidate_index.end(), cmp_descend_double);
-                int col, row;
-                sum_guass = 0.0;
-                //num_multi_link = candidate_index.size();
-                for (int iter = 0; iter < candidate_index.size(); ++iter) {
-                    guass = candidate_index[iter].first;
-                    sum_guass += guass;
-                }
-                for (int iter = 0; iter < candidate_index.size(); ++iter) {
-                    col = candidate_index[iter].second % search_width;
-                    row = candidate_index[iter].second / search_width;
-                    guass = candidate_index[iter].first;
-                    percentage = guass / sum_guass;
-                    if (percentage < percentage_threshold || isnan(ref_search_area[candidate_index[iter].second]) || isnan(guass)) {
-                        continue;
-                    }
-                    candidate_index_index.push_back(iter);
-                }
-                sum_guass = 0.0;
-                for (int iter = 0; iter < candidate_index_index.size(); ++iter) {
-                    guass = candidate_index[candidate_index_index[iter]].first;
-                    sum_guass+=guass;
-                }
-                if (sum_guass <1e-5) {
-                    continue;
-                }
-                for (int iter = 0; iter < candidate_index_index.size(); ++iter) {
-                    idx = candidate_index_index[iter];
-                    col = candidate_index[idx].second % search_width;
-                    row = candidate_index[idx].second / search_width;
-                    ref_x = ref_utm_bbox_[0] + (search_xmin + col) * resolution_;
-                    ref_y = ref_utm_bbox_[3] - (search_ymin + row) * resolution_;
-                    gs::Point ref_pt(ref_x,
-                        ref_y,
-                        ref_search_area[candidate_index[idx].second]);
-                    guass = candidate_index[idx].first;
-                    CORR corr;
-                    if (plane_or_not) {
-                        float ref_dx, ref_dy,ref_dz,magnitude;
-                        vector<float> src_norm, ref_norm;
-                        ref_dx = (ref_search_area[candidate_index[idx].second + 1] - ref_search_area[candidate_index[idx].second - 1]) / 2.0;
-                        ref_dy = (ref_search_area[candidate_index[idx].second - search_width] - ref_search_area[candidate_index[idx].second + search_width]) / 2.0;
-                        magnitude = sqrt(pow(ref_dx,2.0) + pow(ref_dy,2) + 1);
-                        ref_dx /= magnitude;
-                        ref_dy /= magnitude;
-                        ref_dz = 1.0 / magnitude;
-                        ref_norm.push_back(ref_dx);
-                        ref_norm.push_back(ref_dy);
-                        ref_norm.push_back(ref_dz);
-                        corr.ref = ref_pt;
-                        corr.src = src_pt;
-                        corr.ref_norm = ref_norm;
-                        corr.w = guass / sum_guass;
-                    }
-                    else {
-                        corr.ref = ref_pt;
-                        corr.src = src_pt;
-                        corr.w = guass / sum_guass;
-                    }
-
-                    //CORR corr(src_pt, ref_pt, guass / (sum_guass));
-                    if (corrs.size() == 24416) {
-                        int a = 0;
-                    }
-                    corrs.push_back(corr);
-                }
-                valid_src_pts++;
-            }
-            else {
-                if (best_dis == 9999) {
-                    continue;
-                }
-                gs::Point ref_pt(ref_utm_bbox_[0] + (search_xmin + best_col) * resolution_,
-                    ref_utm_bbox_[3] - (search_ymin + best_row) * resolution_,
-                    ref_search_area[best_col + best_row * search_width]);
-                CORR corr;
-                if (plane_or_not) {
-                    float ref_dx, ref_dy, ref_dz, magnitude;
-                    vector<float> src_norm, ref_norm;
-                    ref_dx = (ref_search_area[best_col+1 + best_row * search_width] - ref_search_area[best_col-1 + best_row * search_width] / 2.0);
-                    ref_dy = (ref_search_area[best_col + (best_row-1) * search_width] - ref_search_area[best_col + (best_row+1) * search_width] / 2.0);
-                    magnitude = sqrt(pow(ref_dx, 2.0) + pow(ref_dy, 2) + 1);
-                    ref_dx /= magnitude;
-                    ref_dy /= magnitude;
-                    ref_dz = 1.0 / magnitude;
-                    ref_norm.push_back(ref_dx);
-                    ref_norm.push_back(ref_dy);
-                    ref_norm.push_back(ref_dz);
-                    corr.ref = ref_pt;
-                    corr.src = src_pt;
-                    corr.ref_norm = ref_norm;
-                    corr.w = 1;                 
-                }
-                else {
-                    corr.ref = ref_pt;
-                    corr.src = src_pt;
-                    corr.w = 1;
-                }
-                corrs.push_back(corr);
-                valid_src_pts++;
-            }
-        }
-        //reweight the corr
-        for (int i = 0; i < corrs.size(); ++i) {
-            corrs[i].w /= valid_src_pts;
-        }
-        // reject outlier
-        if (!multi_or_not) {
-            CORR_REJECTOR1(corrs,1.0);
-        }
-
-        //compute rmse
-        if (plane_or_not) {
-            for (int i = 0; i < corrs.size(); ++i) {
-                RMSE += corrs[i].w * (
-                    pow((corrs[i].src.pos[0] - corrs[i].ref.pos[0]) * corrs[i].ref_norm[0], 2) +
-                    pow((corrs[i].src.pos[1] - corrs[i].ref.pos[1]) * corrs[i].ref_norm[1], 2) +
-                    pow((corrs[i].src.pos[2] - corrs[i].ref.pos[2]) * corrs[i].ref_norm[2], 2)
-                    );
-            }
-            RMSE = sqrt(RMSE);
-        }
-        else {
-            for (int i = 0; i < corrs.size(); ++i) {
-                RMSE += corrs[i].w * (pow(corrs[i].src.pos[0] - corrs[i].ref.pos[0], 2.0) +
-                    pow(corrs[i].src.pos[1] - corrs[i].ref.pos[1], 2.0) +
-                    pow(corrs[i].src.pos[2] - corrs[i].ref.pos[2], 2.0));
-            }
-            RMSE = sqrt(RMSE);
-        }
-		if (corrs.size() == 0) {
-			RMSE = 9999;
-		}
-        delete[] ref_search_area;
-    }
-    
-
     /// <summary>
     /// 
     /// </summary>
@@ -1435,7 +1134,7 @@ public:
     /// <param name="R">estimate rotation, 3x3</param>
     /// <param name="T">estimate translation, 3</param>
     void ESTIMATE_TRANSFORMATION_WEIGHTED_CORRS(Eigen::MatrixXd& X, Eigen::MatrixXd& Y, Eigen::VectorXd& W, 
-                                                Eigen::Matrix3d& R, Eigen::Vector3d& T) {
+                                                Eigen::Matrix4d& trans,std::string type) {
         int dim = X.rows();
         /// Normalize weight vector
         Eigen::VectorXd w_normalized = W / W.sum();
@@ -1445,238 +1144,34 @@ public:
             X_mean(i) = (X.row(i).array() * w_normalized.transpose().array()).sum();
             Y_mean(i) = (Y.row(i).array() * w_normalized.transpose().array()).sum();
         }
-        X.colwise() -= X_mean;
-        Y.colwise() -= Y_mean;
 
-        /// Compute transformation
-        Eigen::MatrixXd sigma = X * w_normalized.asDiagonal() * Y.transpose();
-        Eigen::JacobiSVD<Eigen::MatrixXd> svd(sigma, Eigen::ComputeFullU | Eigen::ComputeFullV);
-        if (svd.matrixU().determinant() * svd.matrixV().determinant() < 0.0) {
-            Eigen::VectorXd S = Eigen::VectorXd::Ones(dim); S(dim - 1) = -1.0;
-            R = svd.matrixV() * S.asDiagonal() * svd.matrixU().transpose();
+        if (type == "translation") {
+            trans.block(0, 3, 3, 1) = Y_mean - X_mean;
         }
-        else {
-            R = svd.matrixV() * svd.matrixU().transpose();
+        else if(type == "rigid") {
+            X.colwise() -= X_mean;
+            Y.colwise() -= Y_mean;
+            /// Compute transformation
+            Eigen::MatrixXd sigma = X * w_normalized.asDiagonal() * Y.transpose();
+            Eigen::JacobiSVD<Eigen::MatrixXd> svd(sigma, Eigen::ComputeFullU | Eigen::ComputeFullV);
+            if (svd.matrixU().determinant() * svd.matrixV().determinant() < 0.0) {
+                Eigen::VectorXd S = Eigen::VectorXd::Ones(dim); S(dim - 1) = -1.0;
+                trans.block(0,0,3,3) = svd.matrixV() * S.asDiagonal() * svd.matrixU().transpose();
+            }
+            else {
+                trans.block(0, 0, 3, 3) = svd.matrixV() * svd.matrixU().transpose();
+            }
+            trans.block(0, 3, 3, 1) = Y_mean - trans.block(0, 0, 3, 3) * X_mean;
+            /// Re-apply mean
+            X.colwise() += X_mean;
+            Y.colwise() += Y_mean;
         }
-        T = Y_mean - R * X_mean;
-        /// Re-apply mean
-        X.colwise() += X_mean;
-        Y.colwise() += Y_mean;
-    }
 
-    void ESTIMATE_TRANSFORMATION_WEIGHTED_CORRS(std::vector<CORR>& corrs, double* rotation, double* translation, bool plane_or_not) {
-		gs::initDiagonal(rotation);
-		translation[0] = 0;
-		translation[1] = 0;
-		translation[2] = 0;
-
-		if (corrs.size() < 3) {
-			std::cout << "[ERROR] # correspondences less than 3" << std::endl;
-			return;
-		}
-		// compute estimation Point-to-Plane cost function
-        // ref: https://github.com/PointCloudLibrary/pcl/blob/master/registration/include/pcl/registration/impl/transformation_estimation_point_to_plane_lls_weighted.hpp
-        if (plane_or_not) {
-            using Vector6d = Eigen::Matrix<double, 6, 1>;
-            using Matrix6d = Eigen::Matrix<double, 6, 6>;
-
-            Matrix6d ATA;
-            Vector6d ATb;
-            ATA.setZero();
-            ATb.setZero();
-
-            for (int i=0;i<corrs.size();++i){
-
-
-                const float& sx = corrs[i].src.pos[0];
-                const float& sy = corrs[i].src.pos[1];
-                const float& sz = corrs[i].src.pos[2];
-                const float& dx = corrs[i].ref.pos[0];
-                const float& dy = corrs[i].ref.pos[1];
-                const float& dz = corrs[i].ref.pos[2];
-                const float& nx = corrs[i].ref_norm[0] * corrs[i].w;
-                const float& ny = corrs[i].ref_norm[1] * corrs[i].w;
-                const float& nz = corrs[i].ref_norm[2] * corrs[i].w;
-
-                double a = nz * sy - ny * sz;
-                double b = nx * sz - nz * sx;
-                double c = ny * sx - nx * sy;
-
-                //    0  1  2  3  4  5
-                //    6  7  8  9 10 11
-                //   12 13 14 15 16 17
-                //   18 19 20 21 22 23
-                //   24 25 26 27 28 29
-                //   30 31 32 33 34 35
-
-                ATA.coeffRef(0) += a * a;
-                ATA.coeffRef(1) += a * b;
-                ATA.coeffRef(2) += a * c;
-                ATA.coeffRef(3) += a * nx;
-                ATA.coeffRef(4) += a * ny;
-                ATA.coeffRef(5) += a * nz;
-                ATA.coeffRef(7) += b * b;
-                ATA.coeffRef(8) += b * c;
-                ATA.coeffRef(9) += b * nx;
-                ATA.coeffRef(10) += b * ny;
-                ATA.coeffRef(11) += b * nz;
-                ATA.coeffRef(14) += c * c;
-                ATA.coeffRef(15) += c * nx;
-                ATA.coeffRef(16) += c * ny;
-                ATA.coeffRef(17) += c * nz;
-                ATA.coeffRef(21) += nx * nx;
-                ATA.coeffRef(22) += nx * ny;
-                ATA.coeffRef(23) += nx * nz;
-                ATA.coeffRef(28) += ny * ny;
-                ATA.coeffRef(29) += ny * nz;
-                ATA.coeffRef(35) += nz * nz;
-
-                double d = nx * dx + ny * dy + nz * dz - nx * sx - ny * sy - nz * sz;
-                ATb.coeffRef(0) += a * d;
-                ATb.coeffRef(1) += b * d;
-                ATb.coeffRef(2) += c * d;
-                ATb.coeffRef(3) += nx * d;
-                ATb.coeffRef(4) += ny * d;
-                ATb.coeffRef(5) += nz * d;
-            }
-
-            ATA.coeffRef(6) = ATA.coeff(1);
-            ATA.coeffRef(12) = ATA.coeff(2);
-            ATA.coeffRef(13) = ATA.coeff(8);
-            ATA.coeffRef(18) = ATA.coeff(3);
-            ATA.coeffRef(19) = ATA.coeff(9);
-            ATA.coeffRef(20) = ATA.coeff(15);
-            ATA.coeffRef(24) = ATA.coeff(4);
-            ATA.coeffRef(25) = ATA.coeff(10);
-            ATA.coeffRef(26) = ATA.coeff(16);
-            ATA.coeffRef(27) = ATA.coeff(22);
-            ATA.coeffRef(30) = ATA.coeff(5);
-            ATA.coeffRef(31) = ATA.coeff(11);
-            ATA.coeffRef(32) = ATA.coeff(17);
-            ATA.coeffRef(33) = ATA.coeff(23);
-            ATA.coeffRef(34) = ATA.coeff(29);
-
-            // Solve A*x = b
-            Vector6d x = static_cast<Vector6d>(ATA.inverse() * ATb);
-
-            // Construct the transformation matrix from x
-            Eigen::Matrix4d transformation_matrix;
-            double alpha, beta, gamma, tx, ty, tz;
-            alpha = x(0);
-            beta = x(1);
-            gamma = x(2);
-            tx = x(3);
-            ty = x(4);
-            tz = x(5);
-            transformation_matrix = Eigen::Matrix<double, 4, 4>::Zero();
-            rotation[0] = static_cast<double>(std::cos(gamma) * std::cos(beta));
-            rotation[1] = static_cast<double>(
-                -sin(gamma) * std::cos(alpha) + std::cos(gamma) * sin(beta) * sin(alpha));
-            rotation[2] = static_cast<double>(
-                sin(gamma) * sin(alpha) + std::cos(gamma) * sin(beta) * std::cos(alpha));
-            rotation[3] = static_cast<double>(sin(gamma) * std::cos(beta));
-            rotation[4] = static_cast<double>(
-                std::cos(gamma) * std::cos(alpha) + sin(gamma) * sin(beta) * sin(alpha));
-            rotation[5] = static_cast<double>(
-                -std::cos(gamma) * sin(alpha) + sin(gamma) * sin(beta) * std::cos(alpha));
-            rotation[6] = static_cast<double>(-sin(beta));
-            rotation[7] = static_cast<double>(std::cos(beta) * sin(alpha));
-            rotation[8] = static_cast<double>(std::cos(beta) * std::cos(alpha));
-
-            translation[0] = static_cast<double>(tx);
-            translation[1] = static_cast<double>(ty);
-            translation[2] = static_cast<double>(tz);
-        }
-        // compute estimation Point-to-Point cost function
-        else {
-            gs::Point dynamicMid(0, 0, 0), d_raw, s_raw, d_delta, s_delta;
-            gs::Point staticMid(0, 0, 0);
-            for (int i = 0; i < corrs.size(); ++i) {
-                dynamicMid.pos[0] = dynamicMid.pos[0] + corrs[i].w * corrs[i].src.pos[0];
-                dynamicMid.pos[1] = dynamicMid.pos[1] + corrs[i].w * corrs[i].src.pos[1];
-                dynamicMid.pos[2] = dynamicMid.pos[2] + corrs[i].w * corrs[i].src.pos[2];
-                staticMid.pos[0] = staticMid.pos[0] + corrs[i].w * corrs[i].ref.pos[0];
-                staticMid.pos[1] = staticMid.pos[1] + corrs[i].w * corrs[i].ref.pos[1];
-                staticMid.pos[2] = staticMid.pos[2] + corrs[i].w * corrs[i].ref.pos[2];
-            }
-            double w[9];
-            double U[9]; /// Covariance matrix of Dynamic and Static data.
-            double sigma[3];
-            double V[9];
-            double Diagonal[9];
-
-            double** uSvd = new double* [3];
-            double** vSvd = new double* [3];
-            uSvd[0] = new double[3];
-            uSvd[1] = new double[3];
-            uSvd[2] = new double[3];
-
-            vSvd[0] = new double[3];
-            vSvd[1] = new double[3];
-            vSvd[2] = new double[3];
-            gs::clearMatrix(U);
-            gs::clearMatrix(V);
-            gs::clearMatrix(w);
-            for (int i = 0; i < corrs.size(); i++)
-            {
-                d_raw = corrs[i].src;
-                s_raw = corrs[i].ref;
-                d_delta = d_raw - dynamicMid;
-                s_delta = s_raw - staticMid;
-
-                //outerProduct(&d_delta, &s_delta, w);
-                gs::outerProduct(&s_delta, &d_delta, w);
-                w[0] *= corrs[i].w;
-                w[1] *= corrs[i].w;
-                w[2] *= corrs[i].w;
-                w[3] *= corrs[i].w;
-                w[4] *= corrs[i].w;
-                w[5] *= corrs[i].w;
-                w[6] *= corrs[i].w;
-                w[7] *= corrs[i].w;
-                w[8] *= corrs[i].w;
-                gs::addMatrix(w, U, U);
-            }
-            gs::copyMatToUV(U, uSvd);
-            dsvd(uSvd, 3, 3, sigma, vSvd);
-            gs::copyUVtoMat(uSvd, U);
-            gs::copyUVtoMat(vSvd, V);
-
-            /// Compute Rotation matrix
-            gs::initDiagonal(Diagonal);
-            if (gs::determinant_3by3(uSvd) * gs::determinant_3by3(vSvd) < 0) {
-                Diagonal[8] = -1;
-            }
-            //transpose(U);
-            gs::transpose(V);
-            double tmp[9];
-            double tmp_vec3[3];
-            gs::clearMatrix(tmp);
-            //matrixMult(V, Diagonal,tmp);
-            //matrixMult(tmp, U, rotationMatrix);
-            gs::matrixMult(U, Diagonal, tmp);
-            gs::matrixMult(tmp, V, rotation);
-
-            gs::Point t(0.0, 0.0, 0.0);
-            gs::rotate(&dynamicMid, rotation, &t);
-            translation[0] = staticMid.pos[0] - t.pos[0];
-            translation[1] = staticMid.pos[1] - t.pos[1];
-            translation[2] = staticMid.pos[2] - t.pos[2];
-            delete[] uSvd[0];
-            delete[] uSvd[1];
-            delete[] uSvd[2];
-            delete[] uSvd;
-
-            delete[] vSvd[0];
-            delete[] vSvd[1];
-            delete[] vSvd[2];
-            delete[] vSvd;
-        }
 
     }
 
     void CORR_REJECTOR(std::vector<pair<gs::Point, gs::Point>>& corrs) {
-        int num_trimmed = (int)corrs.size() * trimmed_ratio_;
+        int num_trimmed = (int)corrs.size() * par_.trimmed_ratio_;
         std::vector<pair<gs::Point, gs::Point>> corrs_tmp;
         std::vector<std::pair<float, int>> corr_dis_index;
         float dis;
@@ -1721,107 +1216,6 @@ public:
         STEP_END();
     }
 
-    void STEP1_1_ROUGH_ALIGN_old(string out_path) {
-        std::cout << "\n[STEP1_1] Rough Align" << std::endl;
-        // Sample src pts
-        double margin_ratio = 0.1;
-        int aoi_src_bbox_pixel_margin[4];
-        int margin_width = (aoi_src_bbox_pixel_[1] - aoi_src_bbox_pixel_[0]) * margin_ratio / 2;
-        int margin_height = (aoi_src_bbox_pixel_[2] - aoi_src_bbox_pixel_[3]) * margin_ratio / 2;
-        aoi_src_bbox_pixel_margin[0] = aoi_src_bbox_pixel_[0] + margin_width;
-        aoi_src_bbox_pixel_margin[1] = aoi_src_bbox_pixel_[1] - margin_width;
-        aoi_src_bbox_pixel_margin[2] = aoi_src_bbox_pixel_[2] - margin_height;
-        aoi_src_bbox_pixel_margin[3] = aoi_src_bbox_pixel_[3] + margin_height;
-
-        double widht_height_ratio = (aoi_utm_bbox_[1] - aoi_utm_bbox_[0]) / (aoi_utm_bbox_[3] - aoi_utm_bbox_[2]);
-        int grid_height = ceil(std::sqrt((double)rough_num_pts_ / widht_height_ratio));
-        int grid_width = (int)((double)grid_height * widht_height_ratio);
-        int grid_step_x_pixel = (aoi_src_bbox_pixel_margin[1] - aoi_src_bbox_pixel_margin[0]) / grid_width;
-        int grid_step_y_pixel = (aoi_src_bbox_pixel_margin[2] - aoi_src_bbox_pixel_margin[3])/ grid_height;
-        int grid_x, grid_y;
-        double utm_x, utm_y;
-        double* pts_z = new double[1];
-        for (int row = 0; row < grid_height; ++row) {
-            for (int col = 0; col < grid_width; ++col) {
-                grid_x = aoi_src_bbox_pixel_margin[0] + col * grid_step_x_pixel;
-                grid_y = aoi_src_bbox_pixel_margin[3] + row * grid_step_y_pixel;
-                utm_x = src_utm_bbox_[0] + grid_x * resolution_;
-                utm_y = src_utm_bbox_[3] - grid_y * resolution_;
-                src_band_->RasterIO(GF_Read, grid_x, grid_y, 1, 1, pts_z, 1, 1, GDT_Float64, 0, 0);
-                if (isnan(*pts_z)) {
-                    continue;
-                }
-                rough_src_index_.push_back(make_pair(grid_x, grid_y));
-                gs::Point src_pt(utm_x, utm_y, *pts_z);
-                rough_src_pts_.push_back(src_pt);
-
-            }
-        }
-        delete[] pts_z;
-        // Find correspondence on reference data
-        std::vector<pair<gs::Point, gs::Point>> corrs;
-        double corr_rmse = 0;
-        ROUGH_FIND_CORRESPONDENCE(corrs, corr_rmse);
-
-        //write_ptcloud_corrs(corrs, "N:\\tasks\\reg\\ref_pts.txt", "N:\\tasks\\reg\\src_pts.txt");
-        //Estmate Transformation
-        
-        for (int iter = 0; iter < rough_icp_max_iter_; ++iter) {
-            std::cout << "Rough Align #Iteration: " << iter <<"# corrs: "<<corrs.size() << " RMSE: " << corr_rmse << std::endl;
-            double rotation[9];
-            double translation[3];
-            ESTIMATE_TRANSFORMATION_CORRS(corrs, rotation, translation);
-            double tmp[9];
-            double tmp_vec3[3];
-            gs::matrixMult(rotation, rough_rotation_, tmp);
-            gs::rotate_mat(rough_translation_, rotation, tmp_vec3);
-            rough_translation_[0] = tmp_vec3[0] + translation[0];
-            rough_translation_[1] = tmp_vec3[1] + translation[1];
-            rough_translation_[2] = tmp_vec3[2] + translation[2];
-            std::copy(&tmp[0], &tmp[9], &rough_rotation_[0]);
-
-            // Update source pts
-            update_ptcloud(rough_src_pts_, rotation, translation, GLOBAL_OFFSET_X_m_, GLOBAL_OFFSET_Y_m_, GLOBAL_OFFSET_X_m_, GLOBAL_OFFSET_Y_m_);
-
-            // FInd correspondence
-            double pre_rmse = corr_rmse;
-            ROUGH_FIND_CORRESPONDENCE(corrs, corr_rmse);
-            if (abs(pre_rmse - corr_rmse) < rough_icp_rmse_threshold_) {
-                break;
-            }
-        }
-        
-        //print
-        std::cout << "\nRough rotation: " << rough_rotation_[0] << "," <<
-            rough_rotation_[1] << "," <<
-            rough_rotation_[2] << "," <<
-            rough_rotation_[3] << "," <<
-            rough_rotation_[4] << "," <<
-            rough_rotation_[5] << "," <<
-            rough_rotation_[6] << "," <<
-            rough_rotation_[7] << "," <<
-            rough_rotation_[8] << "," << "\n"<<
-            "Rough translation" << rough_translation_[0] << "," <<
-            rough_translation_[1] << "," <<
-            rough_translation_[2] << endl;
-        if (out_path != "") {
-            ofstream ofs(out_path);
-            ofs << rough_rotation_[0] << " " <<
-                rough_rotation_[1] << " " <<
-                rough_rotation_[2] << " " <<
-                rough_translation_[0] << "\n" <<
-                rough_rotation_[3] << " " <<
-                rough_rotation_[4] << " " <<
-                rough_rotation_[5] << " " <<
-                rough_translation_[0] << "\n" <<
-                rough_rotation_[6] << " " <<
-                rough_rotation_[7] << " " <<
-                rough_rotation_[8] << " " <<
-                rough_translation_[0] << "\n"<<
-                0<<" "<<0<<" "<<0<<" "<<1;
-            ofs.close();
-        }
-    }
     void STEP1_1_ROUGH_ALIGN(string dir_path) {
         std::cout << "\n[STEP1_1] Rough Align" << std::endl;
         // Sample src pts
@@ -1835,7 +1229,7 @@ public:
         aoi_src_bbox_pixel_margin[3] = aoi_src_bbox_pixel_[3] + margin_height;
 
         double widht_height_ratio = (aoi_utm_bbox_[1] - aoi_utm_bbox_[0]) / (aoi_utm_bbox_[3] - aoi_utm_bbox_[2]);
-        int grid_height = ceil(std::sqrt((double)rough_num_pts_ / widht_height_ratio));
+        int grid_height = ceil(std::sqrt((double)par_.rough_num_pts_ / widht_height_ratio));
         int grid_width = (int)((double)grid_height * widht_height_ratio);
         int grid_step_x_pixel = (aoi_src_bbox_pixel_margin[1] - aoi_src_bbox_pixel_margin[0]) / grid_width;
         int grid_step_y_pixel = (aoi_src_bbox_pixel_margin[2] - aoi_src_bbox_pixel_margin[3]) / grid_height;
@@ -1846,8 +1240,8 @@ public:
             for (int col = 0; col < grid_width; ++col) {
                 grid_x = aoi_src_bbox_pixel_margin[0] + col * grid_step_x_pixel;
                 grid_y = aoi_src_bbox_pixel_margin[3] + row * grid_step_y_pixel;
-                utm_x = src_utm_bbox_[0] + grid_x * resolution_;
-                utm_y = src_utm_bbox_[3] - grid_y * resolution_;
+                utm_x = src_utm_bbox_[0] + grid_x * par_.src_resolution_;
+                utm_y = src_utm_bbox_[3] - grid_y * par_.src_resolution_;
                 src_band_->RasterIO(GF_Read, grid_x, grid_y, 1, 1, pts_z, 1, 1, GDT_Float64, 0, 0);
                 if (isnan(*pts_z)) {
                     continue;
@@ -1859,7 +1253,7 @@ public:
         }
         delete[] pts_z;
 
-        // Rough ICP : Adjust Rotation, Z
+        // Rough ICP
         string rough_icp_log = dir_path + "rough_icp.log";
         string rough_trans_txt = dir_path + "rough_icp_trans.txt";
         double rough_rmse;
@@ -1867,93 +1261,98 @@ public:
 		rough_translation_[0] = 0;
 		rough_translation_[1] = 0;
 		rough_translation_[2] = 0;
-        MULTI_ICP(rough_src_pts_, search_half_size_pixel_,rough_icp_percentage_threshold_, multi_or_not_, rough_icp_max_iter_, rough_icp_rmse_threshold_,rough_rotation_,rough_translation_,plane_or_not_, rough_rmse,rough_icp_log);
+        T_rough_ = Eigen::Matrix4d::Identity();
+        MULTI_ICP(rough_src_pts_, T_rough_,par_.type_,par_.search_half_size_pixel_, par_.rough_icp_percentage_threshold_, par_.multi_or_not_, par_.rough_icp_max_iter_, par_.rough_icp_rmse_threshold_,
+            par_.plane_or_not_, rough_rmse,rough_icp_log);
 
         // If no brute force search on X_Y plane, continue to the fine registration
-        if (!brute_force_search_or_not_) {
-            rough_translations_.clear();
-            vector<double> trans;
-            trans.push_back(rough_translation_[0]);
-            trans.push_back(rough_translation_[1]);
-            trans.push_back(rough_translation_[2]);
-            rough_translations_.push_back(trans);
-            return;
-        }
-        // Brute-Force search on x-y plane
-		std::cout << "Brute-Force seach on XY-plane" << std::endl;
-        string xy_search_log = dir_path + "xysearch.log";
-        vector<double> rough_grid_rmses;
-        vector<pair<int, int>> rough_grid_idx;
-        vector<pair<double, double>> rough_trans_xy_list;
-        double rot[9];
-        double grid_trans[3];
-        gs::initDiagonal(rot);
-        grid_trans[0] = 0.0;
-        grid_trans[1] = 0.0;
-        grid_trans[2] = 0.0;
-        grid_x = (int)((xmax_m_ - xmin_m_) / rough_step_m_) + 1;
-        grid_y = (int)((ymax_m_ - ymin_m_) / rough_step_m_) + 1;
-        std::vector<CORR> corrs;
-        double** corr_rmses = new double*[grid_y];
-        for (int i = 0; i < grid_y; ++i) {
-            corr_rmses[i] = new double[grid_x];
-        }
-        ofstream ofs;
-        double corr_rmse = 0;
-        if (dir_path != "" && verbose_ > 0) {
-            ofs.open(xy_search_log);
-        }
-        // first apply rough_trans to rough_src_pts_
-		std::cout << "Search grid(x,y) : " << grid_x << "," << grid_y << std::endl;
-        update_ptcloud(rough_src_pts_, rough_rotation_, rough_translation_, 0, 0, 0, 0);
-        for (int cnt_x = 0; cnt_x < grid_x; ++cnt_x) {
-            for (int cnt_y = 0; cnt_y < grid_y; ++cnt_y) {
-                if (cnt_x == 0 && cnt_y == 0) {
-                    grid_trans[0] = xmin_m_;
-                    grid_trans[1] = ymin_m_;
-                }
-                else if (cnt_y == 0) {
-                    grid_trans[0] = rough_step_m_;
-                    grid_trans[1] = -(grid_y - 1) * rough_step_m_;
-                }
-                else {
-                    grid_trans[0] = 0.0;
-                    grid_trans[1] = rough_step_m_;
-                }
-                rough_trans_xy_list.push_back(make_pair(xmin_m_+cnt_x*rough_step_m_, ymin_m_ + cnt_y * rough_step_m_));
-                rough_grid_idx.push_back(make_pair(cnt_x, cnt_y));
-                update_ptcloud(rough_src_pts_, rot, grid_trans, 0, 0, 0, 0);
-                FIND_MULTI_LINK_CORRESPONDENCE(rough_src_pts_, corrs, search_half_size_pixel_, rough_icp_percentage_threshold_, multi_or_not_, rough_icp_max_iter_, corr_rmse,plane_or_not_);
-                rough_grid_rmses.push_back(corr_rmse);
-                corr_rmses[cnt_y][cnt_x] = corr_rmse;
-                //cout << setprecision(11) << "Grid X,Y: " << cnt_x << "," << cnt_y << ", RMSE: " << corr_rmse << std::endl;
-                if (dir_path != "" && verbose_ > 0) { ofs << setprecision(11) << cnt_x << " " << cnt_y << " " << corr_rmse << std::endl; }
-            }
-        }
-        if (dir_path != "" && verbose_ > 0) { ofs.close(); }
-        
-        // Non-max supression
-        vector<pair<int, int>> mins_ids;
-        non_min_suppresion(grid_x, grid_y, corr_rmses, rough_step_min_resolution_, mins_ids);
-        for (int i = 0; i < grid_y; ++i) {
-            delete[] corr_rmses[i];
-        }
-        delete[] corr_rmses;
+  //      if (!par_.brute_force_search_or_not_) {
+  //          rough_translations_.clear();
+  //          vector<double> trans;
+  //          trans.push_back(rough_translation_[0]);
+  //          trans.push_back(rough_translation_[1]);
+  //          trans.push_back(rough_translation_[2]);
+  //          rough_translations_.push_back(trans);
+  //          return;
+  //      }
+  //      // Brute-Force search on x-y plane
+		//std::cout << "Brute-Force seach on XY-plane" << std::endl;
+  //      string xy_search_log = dir_path + "xysearch.log";
+  //      vector<double> rough_grid_rmses;
+  //      vector<pair<int, int>> rough_grid_idx;
+  //      vector<pair<double, double>> rough_trans_xy_list;
+  //      double rot[9];
+  //      double grid_trans[3];
+  //      gs::initDiagonal(rot);
+  //      grid_trans[0] = 0.0;
+  //      grid_trans[1] = 0.0;
+  //      grid_trans[2] = 0.0;
+  //      grid_x = (int)((par_.xmax_m_ - par_.xmin_m_) / par_.rough_step_m_) + 1;
+  //      grid_y = (int)((par_.ymax_m_ - par_.ymin_m_) / par_.rough_step_m_) + 1;
+  //      std::vector<CORR> corrs;
+  //      Eigen::MatrixXd X, Y;
+  //      Eigen::VectorXd W;
+  //      double** corr_rmses = new double*[grid_y];
+  //      for (int i = 0; i < grid_y; ++i) {
+  //          corr_rmses[i] = new double[grid_x];
+  //      }
+  //      ofstream ofs;
+  //      double corr_rmse = 0;
+  //      if (dir_path != "" && par_.verbose_ > 0) {
+  //          ofs.open(xy_search_log);
+  //      }
+  //      // first apply rough_trans to rough_src_pts_
+		//std::cout << "Search grid(x,y) : " << grid_x << "," << grid_y << std::endl;
+  //      update_ptcloud(rough_src_pts_, rough_rotation_, rough_translation_, 0, 0, 0, 0);
+  //      for (int cnt_x = 0; cnt_x < grid_x; ++cnt_x) {
+  //          for (int cnt_y = 0; cnt_y < grid_y; ++cnt_y) {
+  //              if (cnt_x == 0 && cnt_y == 0) {
+  //                  grid_trans[0] = par_.xmin_m_;
+  //                  grid_trans[1] = par_.ymin_m_;
+  //              }
+  //              else if (cnt_y == 0) {
+  //                  grid_trans[0] = par_.rough_step_m_;
+  //                  grid_trans[1] = -(grid_y - 1) * par_.rough_step_m_;
+  //              }
+  //              else {
+  //                  grid_trans[0] = 0.0;
+  //                  grid_trans[1] = par_.rough_step_m_;
+  //              }
+  //              rough_trans_xy_list.push_back(make_pair(par_.xmin_m_+cnt_x* par_.rough_step_m_, par_.ymin_m_ + cnt_y * par_.rough_step_m_));
+  //              rough_grid_idx.push_back(make_pair(cnt_x, cnt_y));
+  //              update_ptcloud(rough_src_pts_, rot, grid_trans, 0, 0, 0, 0);
+  //              FIND_MULTI_LINK_CORRESPONDENCE(rough_src_pts_, X, Y, W, par_.search_half_size_pixel_, par_.rough_icp_percentage_threshold_, par_.multi_or_not_, par_.rough_icp_max_iter_, corr_rmse, par_.plane_or_not_);
+  //              //FIND_MULTI_LINK_CORRESPONDENCE(rough_src_pts_, corrs, par_.search_half_size_pixel_, par_.rough_icp_percentage_threshold_, par_.multi_or_not_, par_.rough_icp_max_iter_, corr_rmse, par_.plane_or_not_);
+  //              rough_grid_rmses.push_back(corr_rmse);
+  //              corr_rmses[cnt_y][cnt_x] = corr_rmse;
+  //              //cout << setprecision(11) << "Grid X,Y: " << cnt_x << "," << cnt_y << ", RMSE: " << corr_rmse << std::endl;
+  //              if (dir_path != "" && par_.verbose_ > 0) { ofs << setprecision(11) << cnt_x << " " << cnt_y << " " << corr_rmse << std::endl; }
+  //          }
+  //      }
+  //      if (dir_path != "" && par_.verbose_ > 0) { ofs.close(); }
+  //      
+  //      // Non-max supression
+  //      vector<pair<int, int>> mins_ids;
+  //      non_min_suppresion(grid_x, grid_y, corr_rmses, par_.rough_step_min_resolution_, mins_ids);
+  //      for (int i = 0; i < grid_y; ++i) {
+  //          delete[] corr_rmses[i];
+  //      }
+  //      delete[] corr_rmses;
 
-        // Generate Rough translation candidate
-        for (int i = 0; i < mins_ids.size(); ++i) {
-			std::cout << "Top #" << i << " grid (x,y): " << mins_ids[i].second << "," << mins_ids[i].first << std::endl;
-            vector<double> trans;
-            trans.push_back(xmin_m_ + mins_ids[i].second * rough_step_m_+rough_translation_[0]);
-            trans.push_back(ymin_m_ + mins_ids[i].first * rough_step_m_+rough_translation_[1]);
-            trans.push_back(rough_translation_[2]);
-            rough_translations_.push_back(trans);
-			std::cout << "Rough Align Translation candidate: " << std::endl;
-			std::cout << "#" << i << ": " << trans[0] << "," << trans[1] << "," << trans[2] << std::endl;
-			if (i >= rough_num_mins_-1) {
-				break;
-			}
-        }
+  //      // Generate Rough translation candidate
+  //      for (int i = 0; i < mins_ids.size(); ++i) {
+		//	std::cout << "Top #" << i << " grid (x,y): " << mins_ids[i].second << "," << mins_ids[i].first << std::endl;
+  //          vector<double> trans;
+  //          trans.push_back(par_.xmin_m_ + mins_ids[i].second * par_.rough_step_m_+rough_translation_[0]);
+  //          trans.push_back(par_.ymin_m_ + mins_ids[i].first * par_.rough_step_m_+rough_translation_[1]);
+  //          trans.push_back(rough_translation_[2]);
+  //          rough_translations_.push_back(trans);
+		//	std::cout << "Rough Align Translation candidate: " << std::endl;
+		//	std::cout << "#" << i << ": " << trans[0] << "," << trans[1] << "," << trans[2] << std::endl;
+		//	if (i >= par_.rough_num_mins_-1) {
+		//		break;
+		//	}
+  //      }
     }
 
     void STEP2_1_COLLECT_TILE_INFOS() {
@@ -1973,10 +1372,10 @@ public:
                     TILE_INFO tile_info;
                     tile_id = col + row * num_tile_x_;
                     //std::cout << "Tiles:" << tile_id << std::endl;
-                    tile_utm_bbox[0] = aoi_utm_bbox_[0] + col * tilesize_m_;
-                    tile_utm_bbox[1] = aoi_utm_bbox_[0] + (col + 1) * tilesize_m_;
-                    tile_utm_bbox[2] = aoi_utm_bbox_[3] - (row + 1) * tilesize_m_;
-                    tile_utm_bbox[3] = aoi_utm_bbox_[3] - row * tilesize_m_;
+                    tile_utm_bbox[0] = aoi_utm_bbox_[0] + col * par_.tilesize_m_;
+                    tile_utm_bbox[1] = aoi_utm_bbox_[0] + (col + 1) * par_.tilesize_m_;
+                    tile_utm_bbox[2] = aoi_utm_bbox_[3] - (row + 1) * par_.tilesize_m_;
+                    tile_utm_bbox[3] = aoi_utm_bbox_[3] - row * par_.tilesize_m_;
 
                     get_aoi_bbox_pixels(tile_utm_bbox, ref_utm_bbox_, src_utm_bbox_, ref_width_, ref_height_, src_width_, src_height_, tile_ref_bbox, tile_src_bbox);
 
@@ -2027,55 +1426,11 @@ public:
             }
         }
     }
-    void STEP2_2_FILTER_TILE_INFOS_old() {
-        std::cout << "\n[STEP2_2] Filter out tiles" << std::endl;
-        //write_shp(tile_infos,shp_out_all_path);
-        vector<TILE_INFO> tile_infos_only, tile_infos_icp;
-        vector<pair<float, int>> tiles_var_index;
-        vector<pair<float, int>> tiles_similar_index;
-        vector<pair<float, int>> tiles_sum_index;
-        for (int i = 0; i < tile_infos_all_.size(); ++i) {
-            if (tile_infos_all_[i].ref_valid < valid_ratio_threshold_ || tile_infos_all_[i].src_valid < valid_ratio_threshold_ || 
-                tile_infos_all_[i].src_var < var_min_ || tile_infos_all_[i].ref_var < var_min_) {
-                tiles_sum_index.push_back(make_pair(0, i));
-                continue;
-            }
-            tile_infos_filter_.push_back(tile_infos_all_[i]);
-            tiles_var_index.push_back(make_pair(tile_infos_all_[i].ref_var + tile_infos_all_[i].src_var, i));
-            tiles_similar_index.push_back(make_pair(abs(tile_infos_all_[i].ref_var - tile_infos_all_[i].src_var), i));
-            tiles_sum_index.push_back(make_pair(0, i));
-        }
-        sort(tiles_var_index.begin(), tiles_var_index.end(), cmp_descend);
-        sort(tiles_similar_index.begin(), tiles_similar_index.end(), cmp_ascend);
-        for (int iter = 0; iter < tiles_var_index.size(); ++iter) {
-            tiles_sum_index[tiles_var_index[iter].second].first += iter+1;
-        }
-        for (int iter = 0; iter < tiles_similar_index.size(); ++iter) {
-            tiles_sum_index[tiles_similar_index[iter].second].first += iter+1;
-        }
-        sort(tiles_sum_index.begin(), tiles_sum_index.end(), cmp_ascend);
-        for (int i = 0; i < tiles_sum_index.size(); ++i) {
-            if (tiles_sum_index[i].first == 0) {
-                continue;
-            }
-            //tile_infos_icp.push_back(tile_infos[tiles_only_index[i].second]);
-            tile_infos_icp_.push_back(tile_infos_all_[tiles_sum_index[i].second]);
-            if (tile_infos_icp_.size() >= num_filter_tiles_) {
-                break;
-            }
-        }
-        std::cout << "# Pre-Filtered Tiles: " << tile_infos_filter_.size() << std::endl;
-        std::cout << "# Filtered Tiles: "<<tile_infos_icp_.size() << std::endl;
-        write_shp(tile_infos_filter_, "N:\\tasks\\reg\\rough_reg1\\tiles_filter_100m.shp");
-        write_shp(tile_infos_icp_, "N:\\tasks\\reg\\rough_reg1\\tiles_icp_100m.shp");
-        write_shp(tile_infos_all_, "N:\\tasks\\reg\\rough_reg1\\tiles_all_100m.shp");
-        //tiles_only_index.clear();
-    }
     void STEP2_2_FILTER_TILE_INFOS(std::string debug_dir) {
         std::cout << "\n[STEP2_2] Filter out tiles" << std::endl;
-        int num_tiles_each_block = ceil(num_filter_tiles_ / (n_blocks_col_ * n_blocks_row_));
-        int num_tiles_each_block_col = ceil((float)num_tile_x_/(float)n_blocks_col_);
-        int num_tiles_each_block_row = ceil((float)num_tile_y_ / (float)n_blocks_row_);
+        int num_tiles_each_block = ceil(par_.num_filter_tiles_ / (par_.n_blocks_col_ * par_.n_blocks_row_));
+        int num_tiles_each_block_col = ceil((float)num_tile_x_/(float)par_.n_blocks_col_);
+        int num_tiles_each_block_row = ceil((float)num_tile_y_ / (float)par_.n_blocks_row_);
         
         int tile_col_min, tile_col_max, tile_row_min, tile_row_max,tile_local_id,col_local,row_local;
         vector<pair<float, int>> tiles_var_index;
@@ -2084,10 +1439,10 @@ public:
         map<int, int> local_tile_index; // map local tile id to global tile id
         int tile_id;
         // Iterate each block
-		std::cout << "Num of Blocks (x,y)" << n_blocks_col_ << "," << n_blocks_row_ << std::endl;
+		std::cout << "Num of Blocks (x,y)" << par_.n_blocks_col_ << "," << par_.n_blocks_row_ << std::endl;
 		std::cout << "Num tiles each blcoks should be " << num_tiles_each_block << std::endl;
-        for (int b_col = 0; b_col < n_blocks_col_; ++b_col) {
-            for (int b_row = 0; b_row < n_blocks_row_; ++b_row) {
+        for (int b_col = 0; b_col < par_.n_blocks_col_; ++b_col) {
+            for (int b_row = 0; b_row < par_.n_blocks_row_; ++b_row) {
                 tile_col_min = b_col * num_tiles_each_block_col;
                 tile_col_max= (b_col+1) * num_tiles_each_block_col;
                 tile_row_min = b_row * num_tiles_each_block_row;
@@ -2104,8 +1459,8 @@ public:
                 for (int tile_col = tile_col_min; tile_col < tile_col_max; ++tile_col) {
                     for (int tile_row = tile_row_min; tile_row < tile_row_max; ++tile_row) {
                         tile_id = tile_col + tile_row * num_tile_x_;
-                        if (tile_infos_all_[tile_id].ref_valid < valid_ratio_threshold_ || tile_infos_all_[tile_id].src_valid < valid_ratio_threshold_ ||
-                            tile_infos_all_[tile_id].src_var < var_min_ || tile_infos_all_[tile_id].ref_var < var_min_) {
+                        if (tile_infos_all_[tile_id].ref_valid < par_.valid_ratio_threshold_ || tile_infos_all_[tile_id].src_valid < par_.valid_ratio_threshold_ ||
+                            tile_infos_all_[tile_id].src_var < par_.var_min_ || tile_infos_all_[tile_id].ref_var < par_.var_min_) {
                             tiles_sum_index.push_back(make_pair(0, tile_local_id));
                             local_tile_index.insert(make_pair(tile_local_id, tile_id));
                             tile_local_id++;
@@ -2146,7 +1501,7 @@ public:
         std::string shp_all_path = debug_dir + "tiles_all.shp";
         std::string shp_icp_path = debug_dir + "tiles_for_fine.shp";
 
-        if (debug_dir != "" && verbose_ > 0) { 
+        if (debug_dir != "" && par_.verbose_ > 0) {
             write_shp(tile_infos_all_, shp_all_path);
             write_shp(tile_infos_icp_, shp_icp_path);
         }
@@ -2177,10 +1532,10 @@ public:
                 TILE_INFO tile_info = tile_infos_icp_[i];
                 int col = tile_info.tile_id % num_tile_x_;
                 int row = (tile_info.tile_id - col) / num_tile_x_;
-                tile_utm_bbox[0] = aoi_utm_bbox_[0] + col * tilesize_m_;
-                tile_utm_bbox[1] = aoi_utm_bbox_[0] + (col + 1) * tilesize_m_;
-                tile_utm_bbox[2] = aoi_utm_bbox_[3] - (row + 1) * tilesize_m_;
-                tile_utm_bbox[3] = aoi_utm_bbox_[3] - row * tilesize_m_;
+                tile_utm_bbox[0] = aoi_utm_bbox_[0] + col * par_.tilesize_m_;
+                tile_utm_bbox[1] = aoi_utm_bbox_[0] + (col + 1) * par_.tilesize_m_;
+                tile_utm_bbox[2] = aoi_utm_bbox_[3] - (row + 1) * par_.tilesize_m_;
+                tile_utm_bbox[3] = aoi_utm_bbox_[3] - row * par_.tilesize_m_;
                 get_aoi_bbox_pixels(tile_utm_bbox, ref_utm_bbox_, src_utm_bbox_, ref_width_, ref_height_, src_width_, src_height_, tile_ref_bbox, tile_src_bbox);
 
                 double* ref_data = new double[(tile_ref_bbox[1] - tile_ref_bbox[0] + 1) * (tile_ref_bbox[2] - tile_ref_bbox[3] + 1)];
@@ -2216,8 +1571,8 @@ public:
 
                 vector<gs::Point> d_ptcloud;
                 vector<gs::Point> s_ptcloud;
-                convert_ptcloud(ref_data, tile_ref_bbox[1] - tile_ref_bbox[0] + 1, tile_ref_bbox[2] - tile_ref_bbox[3] + 1, resolution_, fine_resolution_factor_, s_ptcloud, tile_utm_bbox[0], tile_utm_bbox[3]);
-                convert_ptcloud(src_data, tile_src_bbox[1] - tile_src_bbox[0] + 1, tile_src_bbox[2] - tile_src_bbox[3] + 1, resolution_, fine_resolution_factor_, d_ptcloud, tile_utm_bbox[0], tile_utm_bbox[3]);
+                convert_ptcloud(ref_data, tile_ref_bbox[1] - tile_ref_bbox[0] + 1, tile_ref_bbox[2] - tile_ref_bbox[3] + 1, par_.ref_resolution_, par_.fine_resolution_factor_, s_ptcloud, tile_utm_bbox[0], tile_utm_bbox[3]);
+                convert_ptcloud(src_data, tile_src_bbox[1] - tile_src_bbox[0] + 1, tile_src_bbox[2] - tile_src_bbox[3] + 1, par_.src_resolution_, par_.fine_resolution_factor_, d_ptcloud, tile_utm_bbox[0], tile_utm_bbox[3]);
                 delete[] ref_data;
                 delete[] src_data;
                 //update_ptcloud(d_ptcloud, rough_rotation_, rough_translation_,tile_utm_bbox[0]+ GLOBAL_OFFSET_X_m_,tile_utm_bbox[3]+ GLOBAL_OFFSET_Y_m_,GLOBAL_OFFSET_X_m_,GLOBAL_OFFSET_Y_m_);
@@ -2278,10 +1633,10 @@ public:
                 TILE_INFO tile_info = tile_infos_icp_[i];
                 int col = tile_info.tile_id % num_tile_x_;
                 int row = (tile_info.tile_id - col) / num_tile_x_;
-                tile_utm_bbox[0] = aoi_utm_bbox_[0] + col * tilesize_m_;
-                tile_utm_bbox[1] = aoi_utm_bbox_[0] + (col + 1) * tilesize_m_;
-                tile_utm_bbox[2] = aoi_utm_bbox_[3] - (row + 1) * tilesize_m_;
-                tile_utm_bbox[3] = aoi_utm_bbox_[3] - row * tilesize_m_;
+                tile_utm_bbox[0] = aoi_utm_bbox_[0] + col * par_.tilesize_m_;
+                tile_utm_bbox[1] = aoi_utm_bbox_[0] + (col + 1) * par_.tilesize_m_;
+                tile_utm_bbox[2] = aoi_utm_bbox_[3] - (row + 1) * par_.tilesize_m_;
+                tile_utm_bbox[3] = aoi_utm_bbox_[3] - row * par_.tilesize_m_;
                 get_aoi_bbox_pixels(tile_utm_bbox, ref_utm_bbox_, src_utm_bbox_, ref_width_, ref_height_, src_width_, src_height_, tile_ref_bbox, tile_src_bbox);
 
                 double* src_data = new double[(tile_src_bbox[1] - tile_src_bbox[0] + 1) * (tile_src_bbox[2] - tile_src_bbox[3] + 1)];
@@ -2297,10 +1652,8 @@ public:
 
                 vector<gs::Point> d_ptcloud;
                 // convert data from pixel coord to utm coor(origin is GLOBAL_OFFX, GLOABL_OFFY)
-                convert_ptcloud(src_data, tile_src_bbox[1] - tile_src_bbox[0] + 1, tile_src_bbox[2] - tile_src_bbox[3] + 1, resolution_,fine_resolution_factor_, d_ptcloud, tile_utm_bbox[0], tile_utm_bbox[3]);
+                convert_ptcloud(src_data, tile_src_bbox[1] - tile_src_bbox[0] + 1, tile_src_bbox[2] - tile_src_bbox[3] + 1, par_.src_resolution_, par_.fine_resolution_factor_, d_ptcloud, tile_utm_bbox[0], tile_utm_bbox[3]);
                 delete[] src_data;
-                // apply rough transformation to src
-                //update_ptcloud(d_ptcloud, rough_rotation_, rough_translation_,0,0,0,0);
 
                 //// write ptcloud
                 fine_src_pts.insert(fine_src_pts.end(), d_ptcloud.begin(), d_ptcloud.end());
@@ -2310,127 +1663,158 @@ public:
 
         /* Fine registration
         */
-		double rough_best_trans[3];
-        for (int i = 0; i < rough_translations_.size(); ++i) {
-			std::cout << "Fine registration #" << i << std::endl;
-            double fine_rmse;
-            double translation[3];
-            double rot[9];
-            double fine_rot[9];
-            double fine_trans[3];
-            gs::initDiagonal(rot);
-            if (i == 0) {
-                translation[0] = rough_translations_[i][0];
-                translation[1] = rough_translations_[i][1];
-                translation[2] = rough_translations_[i][2];
-                update_ptcloud(fine_src_pts, rough_rotation_, translation, 0, 0, 0, 0);
-            }
-            else {
-                translation[0] = rough_translations_[i][0]- rough_translations_[i-1][0];
-                translation[1] = rough_translations_[i][1]- rough_translations_[i-1][1];
-                translation[2] = rough_translations_[i][2]- rough_translations_[i-1][2];
-                update_ptcloud(fine_src_pts, rot, translation, 0, 0, 0, 0);
-            }
-			gs::initDiagonal(fine_rot);
-			fine_trans[0] = 0;
-			fine_trans[1] = 0;
-			fine_trans[2] = 0;
-            MULTI_ICP(fine_src_pts, fine_search_half_pixels_, fine_icp_percentage_threshold_, multi_or_not_, fine_icp_max_iter_, fine_icp_rmse_threshold_, fine_rot, fine_trans, plane_or_not_,fine_rmse, "");
-            std::cout <<" : rough_trans[3]: " << rough_translations_[i][0] << ", " << rough_translations_[i][1] << ", " << rough_translations_[i][2] << " RMSE: " << fine_rmse << std::endl;;
-            if (i == 0) {
-                fine_rmse_ = fine_rmse;
-				std::copy(&fine_rot[0], &fine_rot[9], &fine_rotation_[0]);
-				std::copy(&fine_trans[0], &fine_trans[3], &fine_translation_[0]);
-				std::copy(&rough_translations_[i][0], &rough_translations_[i][3], &rough_best_trans[0]);
+        update_ptcloud(fine_src_pts, T_rough_, 0, 0, 0, 0);
+        MULTI_ICP(fine_src_pts,T_fine_,par_.type_, par_.fine_search_half_pixels_, par_.fine_icp_percentage_threshold_, 
+            par_.multi_or_not_, par_.fine_icp_max_iter_, par_.fine_icp_rmse_threshold_, par_.plane_or_not_, fine_rmse_, "");
 
-            }
-            else {
-                if (fine_rmse < fine_rmse_) {
-                    fine_rmse_ = fine_rmse;
-                    std::copy(&fine_rot[0] , &fine_rot[9], &fine_rotation_[0]);
-                    std::copy(&fine_trans[0] , &fine_trans[3] , &fine_translation_[0]);
-					std::copy(&rough_translations_[i][0], &rough_translations_[i][3], &rough_best_trans[0]);
-                }
-            }
-        }
-        
-		// Merge rough_trans and fine_trans
-		merge_two_trans(rough_rotation_, rough_best_trans, fine_rotation_, fine_translation_, final_rot_, final_trans_);
-		std::cout << std::endl;
-		std::cout << "##################### Result ##########################" << std::endl;
-		std::cout << "Rough rotation:" << rough_rotation_[0] << "," << rough_rotation_[1] << "," << rough_rotation_[2] << "\n"
-			<< rough_rotation_[3] << "," << rough_rotation_[4] << "," << rough_rotation_[5] << "\n"
-			<< rough_rotation_[6] << "," << rough_rotation_[7] << "," << rough_rotation_[8] << "\n"
-			<< "Rough translation: " << rough_best_trans[0] << "," << rough_best_trans[1] << "," << rough_best_trans[2] << "\n\n"
-			<< "Fine rotation:" << fine_rotation_[0] << "," << fine_rotation_[1] << "," << fine_rotation_[2] << "\n"
-			<< fine_rotation_[3] << "," << fine_rotation_[4] << "," << fine_rotation_[5] << "\n"
-			<< fine_rotation_[6] << "," << fine_rotation_[7] << "," << fine_rotation_[8] << "\n"
-			<< "Fine translation: " << fine_translation_[0] << "," << fine_translation_[1] << "," << fine_translation_[2] << "\n\n"
-			<< "Final rotation:" << final_rot_[0] << "," << final_rot_[1] << "," << final_rot_[2] << "\n"
-			<< final_rot_[3] << "," << final_rot_[4] << "," << final_rot_[5] << "\n"
-			<< final_rot_[6] << "," << final_rot_[7] << "," << final_rot_[8] << "\n"
-			<< "Final translation: " << final_trans_[0] << "," << final_trans_[1] << "," << final_trans_[2] << "\n";
+        T_final_ = T_fine_ * T_rough_;
+        std::cout << std::endl;
+        std::cout << "##################### Result ##########################" << std::endl;
+        std::cout << "Rough rotation:\n" << T_rough_.block(0, 0, 3, 3) << "\n\n";
+        std::cout << "Rough translation:\n" << T_rough_.block(0, 3, 3, 1).transpose() << "\n\n";
+        std::cout << "Fine rotation:\n" << T_fine_.block(0, 0, 3, 3) << "\n\n";
+        std::cout << "Fine translation:\n" << T_fine_.block(0, 3, 3, 1).transpose() << "\n\n";
+        std::cout << "Final rotation:\n" << T_final_.block(0, 0, 3, 3) << "\n\n";
+        std::cout << "Final translation:\n" << T_final_.block(0, 3, 3, 1).transpose() << "\n\n";
 
-		std::string out_path = debug_dir + "fine_trans.txt";
-		std::string rough_trans_path = debug_dir + "rough_trans.txt";
-		std::string final_trans_path= debug_dir + "final_trans.txt";
-        if (debug_dir != "" && verbose_>0) {
+        std::string out_path = debug_dir + "fine_trans.txt";
+        std::string rough_trans_path = debug_dir + "rough_trans.txt";
+        std::string final_trans_path = debug_dir + "final_trans.txt";
+        if (debug_dir != "" && par_.verbose_ > 0) {
             ofstream ofs(out_path);
-            ofs <<setprecision(11)<< fine_rotation_[0] << " " <<
-                fine_rotation_[1] << " " <<
-                fine_rotation_[2] << " " <<
-                fine_translation_[0] << "\n" <<
-                fine_rotation_[3] << " " <<
-                fine_rotation_[4] << " " <<
-                fine_rotation_[5] << " " <<
-                fine_translation_[1] << "\n" <<
-                fine_rotation_[6] << " " <<
-                fine_rotation_[7] << " " <<
-                fine_rotation_[8] << " " <<
-                fine_translation_[2] << "\n" <<
-                0 << " " << 0 << " " << 0 << " " << 1;
+            ofs << setprecision(11) << T_fine_;
             ofs.close();
 
-			ofs.open(rough_trans_path);
-			ofs << setprecision(11) << rough_rotation_[0] << " " <<
-				rough_rotation_[1] << " " <<
-				rough_rotation_[2] << " " <<
-				rough_best_trans[0] << "\n" <<
-				rough_rotation_[3] << " " <<
-				rough_rotation_[4] << " " <<
-				rough_rotation_[5] << " " <<
-				rough_best_trans[1] << "\n" <<
-				rough_rotation_[6] << " " <<
-				rough_rotation_[7] << " " <<
-				rough_rotation_[8] << " " <<
-				rough_best_trans[2] << "\n" <<
-				0 << " " << 0 << " " << 0 << " " << 1;
-			ofs.close();
+            ofs.open(rough_trans_path);
+            ofs << setprecision(11) << T_rough_;
+            ofs.close();
 
-			ofs.open(final_trans_path);
-			ofs << setprecision(11) << final_rot_[0] << " " <<
-				final_rot_[1] << " " <<
-				final_rot_[2] << " " <<
-				final_trans_[0] << "\n" <<
-				final_rot_[3] << " " <<
-				final_rot_[4] << " " <<
-				final_rot_[5] << " " <<
-				final_trans_[1] << "\n" <<
-				final_rot_[6] << " " <<
-				final_rot_[7] << " " <<
-				final_rot_[8] << " " <<
-				final_trans_[2] << "\n" <<
-				0 << " " << 0 << " " << 0 << " " << 1;
-			ofs.close();
+            ofs.open(final_trans_path);
+            ofs << setprecision(11) << T_final_;
+            ofs.close();
         }
+		//double rough_best_trans[3];
+  //      for (int i = 0; i < rough_translations_.size(); ++i) {
+		//	std::cout << "Fine registration #" << i << std::endl;
+  //          double fine_rmse;
+  //          double translation[3];
+  //          double rot[9];
+  //          double fine_rot[9];
+  //          double fine_trans[3];
+  //          gs::initDiagonal(rot);
+  //          if (i == 0) {
+  //              translation[0] = rough_translations_[i][0];
+  //              translation[1] = rough_translations_[i][1];
+  //              translation[2] = rough_translations_[i][2];
+  //              update_ptcloud(fine_src_pts, rough_rotation_, translation, 0, 0, 0, 0);
+  //          }
+  //          else {
+  //              translation[0] = rough_translations_[i][0]- rough_translations_[i-1][0];
+  //              translation[1] = rough_translations_[i][1]- rough_translations_[i-1][1];
+  //              translation[2] = rough_translations_[i][2]- rough_translations_[i-1][2];
+  //              update_ptcloud(fine_src_pts, rot, translation, 0, 0, 0, 0);
+  //          }
+		//	gs::initDiagonal(fine_rot);
+		//	fine_trans[0] = 0;
+		//	fine_trans[1] = 0;
+		//	fine_trans[2] = 0;
+  //          MULTI_ICP(fine_src_pts, par_.fine_search_half_pixels_, par_.fine_icp_percentage_threshold_, par_.multi_or_not_, par_.fine_icp_max_iter_, par_.fine_icp_rmse_threshold_, fine_rot, fine_trans, par_.plane_or_not_,fine_rmse, "");
+  //          std::cout <<" : rough_trans[3]: " << rough_translations_[i][0] << ", " << rough_translations_[i][1] << ", " << rough_translations_[i][2] << " RMSE: " << fine_rmse << std::endl;;
+  //          if (i == 0) {
+  //              fine_rmse_ = fine_rmse;
+		//		std::copy(&fine_rot[0], &fine_rot[9], &fine_rotation_[0]);
+		//		std::copy(&fine_trans[0], &fine_trans[3], &fine_translation_[0]);
+		//		std::copy(&rough_translations_[i][0], &rough_translations_[i][3], &rough_best_trans[0]);
+
+  //          }
+  //          else {
+  //              if (fine_rmse < fine_rmse_) {
+  //                  fine_rmse_ = fine_rmse;
+  //                  std::copy(&fine_rot[0] , &fine_rot[9], &fine_rotation_[0]);
+  //                  std::copy(&fine_trans[0] , &fine_trans[3] , &fine_translation_[0]);
+		//			std::copy(&rough_translations_[i][0], &rough_translations_[i][3], &rough_best_trans[0]);
+  //              }
+  //          }
+  //      }
+        
+		// Merge rough_trans and fine_trans
+		//merge_two_trans(rough_rotation_, rough_best_trans, fine_rotation_, fine_translation_, final_rot_, final_trans_);
+		//std::cout << std::endl;
+		//std::cout << "##################### Result ##########################" << std::endl;
+		//std::cout << "Rough rotation:" << rough_rotation_[0] << "," << rough_rotation_[1] << "," << rough_rotation_[2] << "\n"
+		//	<< rough_rotation_[3] << "," << rough_rotation_[4] << "," << rough_rotation_[5] << "\n"
+		//	<< rough_rotation_[6] << "," << rough_rotation_[7] << "," << rough_rotation_[8] << "\n"
+		//	<< "Rough translation: " << rough_best_trans[0] << "," << rough_best_trans[1] << "," << rough_best_trans[2] << "\n\n"
+		//	<< "Fine rotation:" << fine_rotation_[0] << "," << fine_rotation_[1] << "," << fine_rotation_[2] << "\n"
+		//	<< fine_rotation_[3] << "," << fine_rotation_[4] << "," << fine_rotation_[5] << "\n"
+		//	<< fine_rotation_[6] << "," << fine_rotation_[7] << "," << fine_rotation_[8] << "\n"
+		//	<< "Fine translation: " << fine_translation_[0] << "," << fine_translation_[1] << "," << fine_translation_[2] << "\n\n"
+		//	<< "Final rotation:" << final_rot_[0] << "," << final_rot_[1] << "," << final_rot_[2] << "\n"
+		//	<< final_rot_[3] << "," << final_rot_[4] << "," << final_rot_[5] << "\n"
+		//	<< final_rot_[6] << "," << final_rot_[7] << "," << final_rot_[8] << "\n"
+		//	<< "Final translation: " << final_trans_[0] << "," << final_trans_[1] << "," << final_trans_[2] << "\n";
+
+		//std::string out_path = debug_dir + "fine_trans.txt";
+		//std::string rough_trans_path = debug_dir + "rough_trans.txt";
+		//std::string final_trans_path= debug_dir + "final_trans.txt";
+  //      if (debug_dir != "" && par_.verbose_>0) {
+  //          ofstream ofs(out_path);
+  //          ofs <<setprecision(11)<< fine_rotation_[0] << " " <<
+  //              fine_rotation_[1] << " " <<
+  //              fine_rotation_[2] << " " <<
+  //              fine_translation_[0] << "\n" <<
+  //              fine_rotation_[3] << " " <<
+  //              fine_rotation_[4] << " " <<
+  //              fine_rotation_[5] << " " <<
+  //              fine_translation_[1] << "\n" <<
+  //              fine_rotation_[6] << " " <<
+  //              fine_rotation_[7] << " " <<
+  //              fine_rotation_[8] << " " <<
+  //              fine_translation_[2] << "\n" <<
+  //              0 << " " << 0 << " " << 0 << " " << 1;
+  //          ofs.close();
+
+		//	ofs.open(rough_trans_path);
+		//	ofs << setprecision(11) << rough_rotation_[0] << " " <<
+		//		rough_rotation_[1] << " " <<
+		//		rough_rotation_[2] << " " <<
+		//		rough_best_trans[0] << "\n" <<
+		//		rough_rotation_[3] << " " <<
+		//		rough_rotation_[4] << " " <<
+		//		rough_rotation_[5] << " " <<
+		//		rough_best_trans[1] << "\n" <<
+		//		rough_rotation_[6] << " " <<
+		//		rough_rotation_[7] << " " <<
+		//		rough_rotation_[8] << " " <<
+		//		rough_best_trans[2] << "\n" <<
+		//		0 << " " << 0 << " " << 0 << " " << 1;
+		//	ofs.close();
+
+		//	ofs.open(final_trans_path);
+		//	ofs << setprecision(11) << final_rot_[0] << " " <<
+		//		final_rot_[1] << " " <<
+		//		final_rot_[2] << " " <<
+		//		final_trans_[0] << "\n" <<
+		//		final_rot_[3] << " " <<
+		//		final_rot_[4] << " " <<
+		//		final_rot_[5] << " " <<
+		//		final_trans_[1] << "\n" <<
+		//		final_rot_[6] << " " <<
+		//		final_rot_[7] << " " <<
+		//		final_rot_[8] << " " <<
+		//		final_trans_[2] << "\n" <<
+		//		0 << " " << 0 << " " << 0 << " " << 1;
+		//	ofs.close();
+        //}
     }
     void STEP_END() {
         GDALClose(ref_dataset_);
         GDALClose(src_dataset_);
     }
     
-    void MULTI_ICP(std::vector<gs::Point> src_pts,int search_half_pixels,double percentage_threshold,bool multi_or_not,int max_iter,double rmse_threshold,double* rot_out,double* trans_out,double plane_or_not,double& final_rmse,string debug_path) {
-		update_ptcloud(src_pts, rot_out, trans_out, 0, 0, 0, 0);
+    void MULTI_ICP(std::vector<gs::Point> src_pts, Eigen::Matrix4d& T, std::string type, int search_half_pixels,double percentage_threshold,
+        bool multi_or_not,int max_iter,double rmse_threshold,double plane_or_not,double& final_rmse,string debug_path) {
+		update_ptcloud(src_pts, T, 0, 0, 0, 0);
         Eigen::MatrixXd X, Y;
         Eigen::VectorXd W;
         double corr_rmse = 0;
@@ -2439,45 +1823,47 @@ public:
         //write_ptcloud_corrs(corrs, "N:\\tasks\\reg\\ref_pts.txt", "N:\\tasks\\reg\\src_pts.txt");
         //Estmate Transformation
         ofstream ofs;
-        if (debug_path != "" && verbose_>0) {
+        if (debug_path != "" && par_.verbose_>0) {
             ofs.open(debug_path);
         }
         for (int iter = 0; iter < max_iter; ++iter) {
-            std::cout << std::setprecision(11) << "ICP #Iteration: " << iter << "# corrs: " << X.rows() << " RMSE: " << corr_rmse <<"Trans: "<<trans_out[0]<<","<<trans_out[1]<<","<<trans_out[2]<< std::endl;
-            if (debug_path != "" && verbose_>0) {
-                ofs << std::setprecision(11)<< corr_rmse << " " << trans_out[0] <<" "<<trans_out[1] <<" "<<trans_out[2] << std::endl;
+            std::cout << std::setprecision(11) << "ICP #Iteration: " << iter << "# corrs: " << X.rows() << " RMSE: " << corr_rmse <<"Trans: "<<T(0,3)<<","<< T(1, 3) <<","<< T(2, 3) << std::endl;
+            if (debug_path != "" && par_.verbose_>0) {
+                ofs << std::setprecision(11)<< corr_rmse << " " << T(0, 3) <<" "<< T(1, 3) <<" "<< T(2, 3) << std::endl;
             }
-            Eigen::Matrix3d R;
-            Eigen::Vector3d T;
+            Eigen::Matrix4d transform;
             double rotation[9];
             double translation[3];
-            ESTIMATE_TRANSFORMATION_WEIGHTED_CORRS(X, Y, W, R, T);
+            ESTIMATE_TRANSFORMATION_WEIGHTED_CORRS(X, Y, W, transform,type);
+
+            T.block(0, 0, 3, 3) = transform.block(0, 0, 3, 3) * T.block(0, 0, 3, 3);
+            T.block(0, 3, 3, 1) = transform.block(0, 0, 3, 3) * T.block(0, 3, 3, 1)+ transform.block(0, 3, 3, 1);
             //ESTIMATE_TRANSFORMATION_WEIGHTED_CORRS(corrs, rotation, translation,plane_or_not);
-            rotation[0] = R(0, 0);
-            rotation[1] = R(0, 1);
-            rotation[2] = R(0, 2);
-            rotation[3] = R(1, 0);
-            rotation[4] = R(1, 1);
-            rotation[5] = R(1, 2);
-            rotation[6] = R(2, 0);
-            rotation[7] = R(2, 1);
-            rotation[8] = R(2, 2);
-            translation[0] = T(0);
-            translation[1] = T(1);
-            translation[2] = T(2);
+            //rotation[0] = transform(0, 0);
+            //rotation[1] = transform(0, 1);
+            //rotation[2] = transform(0, 2);
+            //rotation[3] = transform(1, 0);
+            //rotation[4] = transform(1, 1);
+            //rotation[5] = transform(1, 2);
+            //rotation[6] = transform(2, 0);
+            //rotation[7] = transform(2, 1);
+            //rotation[8] = transform(2, 2);
+            //translation[0] = transform(0,3);
+            //translation[1] = transform(1,3);
+            //translation[2] = transform(2,3);
 
 
-            double tmp[9];
-            double tmp_vec3[3];
-            gs::matrixMult(rotation, rot_out, tmp);
-            gs::rotate_mat(trans_out, rotation, tmp_vec3);
-            trans_out[0] = tmp_vec3[0] + translation[0];
-            trans_out[1] = tmp_vec3[1] + translation[1];
-            trans_out[2] = tmp_vec3[2] + translation[2];
-            std::copy(&tmp[0], &tmp[9], &rot_out[0]);
+            //double tmp[9];
+            //double tmp_vec3[3];
+            //gs::matrixMult(rotation, rot_out, tmp);
+            //gs::rotate_mat(trans_out, rotation, tmp_vec3);
+            //trans_out[0] = tmp_vec3[0] + translation[0];
+            //trans_out[1] = tmp_vec3[1] + translation[1];
+            //trans_out[2] = tmp_vec3[2] + translation[2];
+            //std::copy(&tmp[0], &tmp[9], &rot_out[0]);
 
             // Update source pts
-            update_ptcloud(src_pts, rotation, translation, 0.0, 0.0, 0.0, 0.0);
+            update_ptcloud(src_pts, transform, 0.0, 0.0, 0.0, 0.0);
 
             // FInd correspondence
             double pre_rmse = corr_rmse;
@@ -2505,23 +1891,13 @@ public:
             }
             final_rmse = (corr_rmse < final_rmse) ? corr_rmse : final_rmse;
         }
-        if (debug_path != "" && verbose_>0) {
+        if (debug_path != "" && par_.verbose_>0) {
             ofs.close();
         }
 
         //print
-        std::cout << "ICP result rotation: " << rot_out[0] << "," <<
-            rot_out[1] << "," <<
-            rot_out[2] << "," <<
-            rot_out[3] << "," <<
-            rot_out[4] << "," <<
-            rot_out[5] << "," <<
-            rot_out[6] << "," <<
-            rot_out[7] << "," <<
-            rot_out[8] << "," <<"\n"<<
-            "ICP result translation" << trans_out[0] << "," <<
-            trans_out[1] << "," <<
-            trans_out[2] << endl;
+        std::cout << "ICP result rotation: " << T.block(0,0,3,3)<<"\n"<<
+            "ICP result translation" << T.block(0, 3, 3, 1) << endl;
     }
 
     void HARRIS(double* data, int width, int height,int step, double k, double& lambda1, double& lambda2, double& R) {
@@ -2642,10 +2018,10 @@ public:
             TILE_INFO tile_info = tile_infos_all_[i];
             int col = tile_info.tile_id % num_tile_x_;
             int row = (tile_info.tile_id - col) / num_tile_x_;
-            tile_utm_bbox[0] = aoi_utm_bbox_[0] + col * tilesize_m_;
-            tile_utm_bbox[1] = aoi_utm_bbox_[0] + (col + 1) * tilesize_m_;
-            tile_utm_bbox[2] = aoi_utm_bbox_[3] - (row + 1) * tilesize_m_;
-            tile_utm_bbox[3] = aoi_utm_bbox_[3] - row * tilesize_m_;
+            tile_utm_bbox[0] = aoi_utm_bbox_[0] + col * par_.tilesize_m_;
+            tile_utm_bbox[1] = aoi_utm_bbox_[0] + (col + 1) * par_.tilesize_m_;
+            tile_utm_bbox[2] = aoi_utm_bbox_[3] - (row + 1) * par_.tilesize_m_;
+            tile_utm_bbox[3] = aoi_utm_bbox_[3] - row * par_.tilesize_m_;
             get_aoi_bbox_pixels(tile_utm_bbox, ref_utm_bbox_, src_utm_bbox_, ref_width_, ref_height_, src_width_, src_height_, tile_ref_bbox, tile_src_bbox);
 
             double* ref_data = new double[(tile_ref_bbox[1] - tile_ref_bbox[0] + 1) * (tile_ref_bbox[2] - tile_ref_bbox[3] + 1)];
@@ -2707,10 +2083,10 @@ public:
                 TILE_INFO tile_info = tile_infos_icp_[i];
                 int col = tile_info.tile_id % num_tile_x_;
                 int row = (tile_info.tile_id - col) / num_tile_x_;
-                tile_utm_bbox[0] = aoi_utm_bbox_[0] + col * tilesize_m_;
-                tile_utm_bbox[1] = aoi_utm_bbox_[0] + (col + 1) * tilesize_m_;
-                tile_utm_bbox[2] = aoi_utm_bbox_[3] - (row + 1) * tilesize_m_;
-                tile_utm_bbox[3] = aoi_utm_bbox_[3] - row * tilesize_m_;
+                tile_utm_bbox[0] = aoi_utm_bbox_[0] + col * par_.tilesize_m_;
+                tile_utm_bbox[1] = aoi_utm_bbox_[0] + (col + 1) * par_.tilesize_m_;
+                tile_utm_bbox[2] = aoi_utm_bbox_[3] - (row + 1) * par_.tilesize_m_;
+                tile_utm_bbox[3] = aoi_utm_bbox_[3] - row * par_.tilesize_m_;
                 get_aoi_bbox_pixels(tile_utm_bbox, ref_utm_bbox_, src_utm_bbox_, ref_width_, ref_height_, src_width_, src_height_, tile_ref_bbox, tile_src_bbox);
 
                 double* ref_data = new double[(tile_ref_bbox[1] - tile_ref_bbox[0] + 1) * (tile_ref_bbox[2] - tile_ref_bbox[3] + 1)];
@@ -2788,19 +2164,19 @@ public:
 
     void print_info() {
         std::cout << "Registration Start\n";
-        if (multi_or_not_) {
+        if (par_.multi_or_not_) {
             std::cout << "Multi-link function on\n";
         }
         else {
             std::cout << "Multi-link function off\n";
         }
-        if (plane_or_not_) {
+        if (par_.plane_or_not_) {
             std::cout << "Point-to-Plane function on\n";
         }
         else {
             std::cout << "Point-to-Plane function off\n";
         }
-        if (brute_force_search_or_not_) {
+        if (par_.brute_force_search_or_not_) {
             std::cout << "Brute-Force search on X-Y plane on\n";
         }
         else {
@@ -2812,12 +2188,13 @@ public:
 
 class DSM_TRANSFORM {
 public:
-    DSM_TRANSFORM(std::string in_path,std::string out_path,double* rotation,double* translation,double offx,double offy) {
+    DSM_TRANSFORM(std::string in_path,std::string out_path,Eigen::Matrix4d Transform,double offx,double offy) {
+        transform_ = Transform;
         in_zmin_ = -9999;
         in_zmax_ = -9999;
         int tile_size = 3000;
-        std::copy(&rotation[0], &rotation[9], &rotation_[0]);
-        std::copy(&translation[0], &translation[3], &translation_[0]);
+        //std::copy(&rotation[0], &rotation[9], &rotation_[0]);
+        //std::copy(&translation[0], &translation[3], &translation_[0]);
         GLOBAL_OFFSET_X_m_ = offx;
         GLOBAL_OFFSET_Y_m_ = offy;
         double transform[6],transform_out[6];
@@ -2875,44 +2252,30 @@ public:
             }
         }
         // compute output bbox size
-        double pt1[3], pt2[3], pt3[3], pt4[3], pt5[3], pt6[3], pt7[3], pt8[3],
-               pt1_trans[3],pt2_trans[3],pt3_trans[3],pt4_trans[3], pt5_trans[3], pt6_trans[3], pt7_trans[3], pt8_trans[3];
-        pt1[0] = in_utm_bbox_[0];
-        pt1[1] = in_utm_bbox_[3];
-        pt1[2] = in_zmin_;
-        pt5[0] = in_utm_bbox_[0];
-        pt5[1] = in_utm_bbox_[3];
-        pt5[2] = in_zmax_;
-        pt2[0] = in_utm_bbox_[1];
-        pt2[1] = in_utm_bbox_[3];
-        pt2[2] = in_zmin_;
-        pt6[0] = in_utm_bbox_[1];
-        pt6[1] = in_utm_bbox_[3];
-        pt6[2] = in_zmax_;
-        pt3[0] = in_utm_bbox_[1];
-        pt3[1] = in_utm_bbox_[2];
-        pt3[2] = in_zmin_;
-        pt7[0] = in_utm_bbox_[1];
-        pt7[1] = in_utm_bbox_[2];
-        pt7[2] = in_zmax_;
-        pt4[0] = in_utm_bbox_[0];
-        pt4[1] = in_utm_bbox_[2];
-        pt4[2] = in_zmin_;
-        pt8[0] = in_utm_bbox_[0];
-        pt8[1] = in_utm_bbox_[2];
-        pt8[2] = in_zmax_;
-        point_trans(pt1, rotation_, translation_, GLOBAL_OFFSET_X_m_, GLOBAL_OFFSET_Y_m_, pt1_trans);
-        point_trans(pt2, rotation_, translation_, GLOBAL_OFFSET_X_m_, GLOBAL_OFFSET_Y_m_, pt2_trans);
-        point_trans(pt3, rotation_, translation_, GLOBAL_OFFSET_X_m_, GLOBAL_OFFSET_Y_m_, pt3_trans);
-        point_trans(pt4, rotation_, translation_, GLOBAL_OFFSET_X_m_, GLOBAL_OFFSET_Y_m_, pt4_trans);
-        point_trans(pt5, rotation_, translation_, GLOBAL_OFFSET_X_m_, GLOBAL_OFFSET_Y_m_, pt5_trans);
-        point_trans(pt6, rotation_, translation_, GLOBAL_OFFSET_X_m_, GLOBAL_OFFSET_Y_m_, pt6_trans);
-        point_trans(pt7, rotation_, translation_, GLOBAL_OFFSET_X_m_, GLOBAL_OFFSET_Y_m_, pt7_trans);
-        point_trans(pt8, rotation_, translation_, GLOBAL_OFFSET_X_m_, GLOBAL_OFFSET_Y_m_, pt8_trans);
-        out_utm_bbox_[0] = min4(pt1_trans[0], pt4_trans[0], pt5_trans[0], pt8_trans[0]);
-        out_utm_bbox_[1] = max4(pt2_trans[0], pt3_trans[0], pt6_trans[0], pt7_trans[0]);
-        out_utm_bbox_[2] = min4(pt3_trans[1], pt4_trans[1], pt7_trans[1], pt8_trans[1]);
-        out_utm_bbox_[3] = max4(pt1_trans[1], pt2_trans[1], pt5_trans[1], pt6_trans[1]);
+        //double pt1[3], pt2[3], pt3[3], pt4[3], pt5[3], pt6[3], pt7[3], pt8[3],
+        //       pt1_trans[3],pt2_trans[3],pt3_trans[3],pt4_trans[3], pt5_trans[3], pt6_trans[3], pt7_trans[3], pt8_trans[3];
+        Eigen::Vector3d pt1, pt2, pt3, pt4, pt5, pt6, pt7, pt8,
+            pt1_trans, pt2_trans, pt3_trans, pt4_trans, pt5_trans, pt6_trans, pt7_trans, pt8_trans;
+        pt1 << in_utm_bbox_[0],  in_utm_bbox_[3],in_zmin_;
+        pt5<< in_utm_bbox_[0],in_utm_bbox_[3],in_zmax_;
+        pt2<<in_utm_bbox_[1],in_utm_bbox_[3], in_zmin_;
+        pt6<<in_utm_bbox_[1],in_utm_bbox_[3], in_zmax_;
+        pt3<<in_utm_bbox_[1],in_utm_bbox_[2],in_zmin_;
+        pt7<<in_utm_bbox_[1],in_utm_bbox_[2],in_zmax_;
+        pt4<<in_utm_bbox_[0], in_utm_bbox_[2],in_zmin_;
+        pt8<<in_utm_bbox_[0],in_utm_bbox_[2],in_zmax_;
+        point_trans(pt1, transform_, GLOBAL_OFFSET_X_m_, GLOBAL_OFFSET_Y_m_, pt1_trans);
+        point_trans(pt2, transform_, GLOBAL_OFFSET_X_m_, GLOBAL_OFFSET_Y_m_, pt2_trans);
+        point_trans(pt3, transform_, GLOBAL_OFFSET_X_m_, GLOBAL_OFFSET_Y_m_, pt3_trans);
+        point_trans(pt4, transform_, GLOBAL_OFFSET_X_m_, GLOBAL_OFFSET_Y_m_, pt4_trans);
+        point_trans(pt5, transform_, GLOBAL_OFFSET_X_m_, GLOBAL_OFFSET_Y_m_, pt5_trans);
+        point_trans(pt6, transform_, GLOBAL_OFFSET_X_m_, GLOBAL_OFFSET_Y_m_, pt6_trans);
+        point_trans(pt7, transform_, GLOBAL_OFFSET_X_m_, GLOBAL_OFFSET_Y_m_, pt7_trans);
+        point_trans(pt8, transform_, GLOBAL_OFFSET_X_m_, GLOBAL_OFFSET_Y_m_, pt8_trans);
+        out_utm_bbox_[0] = min4(pt1_trans(0), pt4_trans(0), pt5_trans(0), pt8_trans(0));
+        out_utm_bbox_[1] = max4(pt2_trans(0), pt3_trans(0), pt6_trans(0), pt7_trans(0));
+        out_utm_bbox_[2] = min4(pt3_trans(1), pt4_trans(1), pt7_trans(1), pt8_trans(1));
+        out_utm_bbox_[3] = max4(pt1_trans(1), pt2_trans(1), pt5_trans(1), pt6_trans(1));
         out_width_ = floor((out_utm_bbox_[1] - out_utm_bbox_[0]+transform[1]/2) / transform[1])+1;
         out_height_ = floor((out_utm_bbox_[3] - out_utm_bbox_[2] + transform[1] / 2) / transform[1]) + 1;
 
@@ -2953,13 +2316,13 @@ public:
     double out_utm_bbox_[4];
     double in_utm_bbox_[4];
     double in_zmin_, in_zmax_;
-    double rotation_[9];
-    double translation_[3];
+    Eigen::Matrix4d transform_;
 
     void START() {
         double* write_value = new double[1];
         double* read_value = new double[1];
-        double pt[3],pt_out[3];
+        //double pt[3],pt_out[3];
+        Eigen::Vector3d pt, pt_out;
         int col_out, row_out;
         for (int row = 0; row < in_height_; ++row)
         {
@@ -2972,7 +2335,7 @@ public:
                 if (isnan(pt[2])) {
                     continue;
                 }
-                point_trans(pt, rotation_, translation_, GLOBAL_OFFSET_X_m_, GLOBAL_OFFSET_Y_m_, pt_out);
+                point_trans(pt, transform_, GLOBAL_OFFSET_X_m_, GLOBAL_OFFSET_Y_m_, pt_out);
                 col_out = floor((pt_out[0] - out_utm_bbox_[0] + resolution_ / 2) / resolution_);
                 row_out= floor((out_utm_bbox_[3]- pt_out[1]+ resolution_ / 2) / resolution_);
                 if (row_out < 0) {
@@ -3065,74 +2428,74 @@ public:
         out.close();
 
     }
-    void point_trans(double* in_pt, double* rotation, double* translation, double offx, double offy, double* out_pt) {
-        in_pt[0] -= offx;
-        in_pt[1] -= offy;
-        gs::rotate_mat(in_pt, rotation, out_pt);
-        out_pt[0] = out_pt[0] + translation[0] + offx;
-        out_pt[1] = out_pt[1] + translation[1] + offy;
-        out_pt[2] = out_pt[2] + translation[2] ;
-        in_pt[0] += offx;
-        in_pt[1] += offy;
+    void point_trans(Eigen::Vector3d& in_pt, Eigen::Matrix4d T, double offx, double offy, Eigen::Vector3d& out_pt) {
+        in_pt(0) -= offx;
+        in_pt(1) -= offy;
+        Eigen::Vector4d in_pt_homo(in_pt(0),in_pt(1),in_pt(2),1);
+        Eigen::Vector4d out_pt_homo = T * in_pt_homo;
+        out_pt(0) = out_pt_homo(0)  + offx;
+        out_pt(1) = out_pt_homo(1)  + offy;
+        out_pt(2) = out_pt_homo(2);
+        in_pt(0) += offx;
+        in_pt(1) += offy;
     }
 };
 
-void LIDARDSM_REG(std::string dsm_ref_path,std::string dsm_src_path) {
-    DSM_REG dsm_reg(dsm_ref_path, dsm_src_path);
-    dsm_reg.START("");
-    std::string dsm_out_name = fs::path(dsm_src_path).filename().string();
-    dsm_out_name=dsm_out_name.replace(dsm_out_name.find(".tif"), sizeof(".tif") - 1, "_reg.tif");
-    std::string dsm_out_path = fs::path(dsm_src_path).replace_filename(dsm_out_name).string();
-    DSM_TRANSFORM dsm_trans(dsm_src_path, dsm_out_path, dsm_reg.final_rot_, dsm_reg.final_trans_, dsm_reg.GLOBAL_OFFSET_X_m_, dsm_reg.GLOBAL_OFFSET_Y_m_);
-    dsm_trans.START();  
-}
+//void LIDARDSM_REG(std::string dsm_ref_path,std::string dsm_src_path) {
+//    DSM_REG dsm_reg(dsm_ref_path, dsm_src_path);
+//    dsm_reg.START("");
+//    std::string dsm_out_name = fs::path(dsm_src_path).filename().string();
+//    dsm_out_name=dsm_out_name.replace(dsm_out_name.find(".tif"), sizeof(".tif") - 1, "_reg.tif");
+//    std::string dsm_out_path = fs::path(dsm_src_path).replace_filename(dsm_out_name).string();
+//    DSM_TRANSFORM dsm_trans(dsm_src_path, dsm_out_path, dsm_reg.final_rot_, dsm_reg.final_trans_, dsm_reg.GLOBAL_OFFSET_X_m_, dsm_reg.GLOBAL_OFFSET_Y_m_);
+//    dsm_trans.START();  
+//}
 
-void SATDSM_REG(std::string dsm_ref_path, std::string dsm_src_path) {
-    DSM_REG dsm_reg(dsm_ref_path, dsm_src_path);
-    dsm_reg.search_half_size_pixel_ = 10;
-    dsm_reg.rough_icp_max_iter_ = 200;
-    dsm_reg.fine_icp_max_iter_ = 200;
+//void SATDSM_REG(std::string dsm_ref_path, std::string dsm_src_path) {
+//    DSM_REG dsm_reg(dsm_ref_path, dsm_src_path);
+//    dsm_reg.search_half_size_pixel_ = 10;
+//    dsm_reg.rough_icp_max_iter_ = 200;
+//    dsm_reg.fine_icp_max_iter_ = 200;
+//    dsm_reg.START("");
+//    std::string dsm_out_name = fs::path(dsm_src_path).filename().string();
+//    dsm_out_name = dsm_out_name.replace(dsm_out_name.find(".tif"), sizeof(".tif") - 1, "_reg.tif");
+//    std::string dsm_out_path = fs::path(dsm_src_path).replace_filename(dsm_out_name).string();
+//    DSM_TRANSFORM dsm_trans(dsm_src_path, dsm_out_path, dsm_reg.final_rot_, dsm_reg.final_trans_, dsm_reg.GLOBAL_OFFSET_X_m_, dsm_reg.GLOBAL_OFFSET_Y_m_);
+//    dsm_trans.START();
+//}
+
+//void SATDSM_REG_only_translation(std::string dsm_ref_path, std::string dsm_src_path) {
+//    DSM_REG dsm_reg(dsm_ref_path, dsm_src_path);
+//    dsm_reg.search_half_size_pixel_ = 10;
+//    dsm_reg.rough_icp_max_iter_ = 200;
+//    dsm_reg.fine_icp_max_iter_ = 200;
+//    dsm_reg.START("");
+//    std::string dsm_out_name = fs::path(dsm_src_path).filename().string();
+//    dsm_out_name = dsm_out_name.replace(dsm_out_name.find(".tif"), sizeof(".tif") - 1, "_reg.tif");
+//    std::string dsm_out_path = fs::path(dsm_src_path).replace_filename(dsm_out_name).string();
+//    double rotation[9];
+//    rotation[0] = 1;
+//    rotation[1] = 0;
+//    rotation[2] = 0;
+//    rotation[3] = 0;
+//    rotation[4] = 1;
+//    rotation[5] = 0;
+//    rotation[6] = 0;
+//    rotation[7] = 0;
+//    rotation[8] = 1;
+//
+//
+//    DSM_TRANSFORM dsm_trans(dsm_src_path, dsm_out_path, rotation, dsm_reg.final_trans_, dsm_reg.GLOBAL_OFFSET_X_m_, dsm_reg.GLOBAL_OFFSET_Y_m_);
+//    dsm_trans.START();
+//}
+
+void DSM_REG_v1(Parameters& par) {
+    DSM_REG dsm_reg(par);
     dsm_reg.START("");
-    std::string dsm_out_name = fs::path(dsm_src_path).filename().string();
+    std::string dsm_out_name = fs::path(par.src_path_).filename().string();
     dsm_out_name = dsm_out_name.replace(dsm_out_name.find(".tif"), sizeof(".tif") - 1, "_reg.tif");
-    std::string dsm_out_path = fs::path(dsm_src_path).replace_filename(dsm_out_name).string();
-    DSM_TRANSFORM dsm_trans(dsm_src_path, dsm_out_path, dsm_reg.final_rot_, dsm_reg.final_trans_, dsm_reg.GLOBAL_OFFSET_X_m_, dsm_reg.GLOBAL_OFFSET_Y_m_);
-    dsm_trans.START();
-}
-
-void SATDSM_REG_only_translation(std::string dsm_ref_path, std::string dsm_src_path) {
-    DSM_REG dsm_reg(dsm_ref_path, dsm_src_path);
-    dsm_reg.search_half_size_pixel_ = 10;
-    dsm_reg.rough_icp_max_iter_ = 200;
-    dsm_reg.fine_icp_max_iter_ = 200;
-    dsm_reg.START("");
-    std::string dsm_out_name = fs::path(dsm_src_path).filename().string();
-    dsm_out_name = dsm_out_name.replace(dsm_out_name.find(".tif"), sizeof(".tif") - 1, "_reg.tif");
-    std::string dsm_out_path = fs::path(dsm_src_path).replace_filename(dsm_out_name).string();
-    double rotation[9];
-    rotation[0] = 1;
-    rotation[1] = 0;
-    rotation[2] = 0;
-    rotation[3] = 0;
-    rotation[4] = 1;
-    rotation[5] = 0;
-    rotation[6] = 0;
-    rotation[7] = 0;
-    rotation[8] = 1;
-
-
-    DSM_TRANSFORM dsm_trans(dsm_src_path, dsm_out_path, rotation, dsm_reg.final_trans_, dsm_reg.GLOBAL_OFFSET_X_m_, dsm_reg.GLOBAL_OFFSET_Y_m_);
-    dsm_trans.START();
-}
-
-void DSM_REG_v1(std::string dsm_ref_path, std::string dsm_src_path) {
-    DSM_REG dsm_reg(dsm_ref_path, dsm_src_path);
-    dsm_reg.multi_or_not_ = true;
-    dsm_reg.START("");
-    std::string dsm_out_name = fs::path(dsm_src_path).filename().string();
-    dsm_out_name = dsm_out_name.replace(dsm_out_name.find(".tif"), sizeof(".tif") - 1, "_reg.tif");
-    std::string dsm_out_path = fs::path(dsm_src_path).replace_filename(dsm_out_name).string();
-    DSM_TRANSFORM dsm_trans(dsm_src_path, dsm_out_path, dsm_reg.final_rot_, dsm_reg.final_trans_, dsm_reg.GLOBAL_OFFSET_X_m_, dsm_reg.GLOBAL_OFFSET_Y_m_);
+    std::string dsm_out_path = fs::path(par.src_path_).replace_filename(dsm_out_name).string();
+    DSM_TRANSFORM dsm_trans(par.src_path_, dsm_out_path, dsm_reg.T_final_, dsm_reg.GLOBAL_OFFSET_X_m_, dsm_reg.GLOBAL_OFFSET_Y_m_);
     dsm_trans.START();
 }
 
@@ -3146,89 +2509,117 @@ void DSM_REG_v1(std::string dsm_ref_path, std::string dsm_src_path) {
 //}
 
 int main(int argc, char* argv[]) {
-    //argparse::ArgumentParser program("Large-scale DSM registration based on ICP");
-    //program.add_argument("-src").required().help("source/moving DSM file");
-    //program.add_argument("-dst").required().help("reference/fixed DSM file");
+    argparse::ArgumentParser program("Large-scale DSM registration based on two-stage (rough, fine) ICP, registered result will be in the same folder of src file");
+    program.add_argument("-src").required().help("source/moving DSM file");
+    program.add_argument("-dst").required().help("reference/fixed DSM file");
+    program.add_argument("-src_reso").default_value(0.5).help("source/moving DSM resolution");
+    program.add_argument("-dst_reso").default_value(0.5).help("reference/fixed DSM resolution");
+    program.add_argument("-rough_icp_max_iter").default_value(50).help("Rough registration using ICP: maximum number of iterations").scan<'d',int>();
+    program.add_argument("-rough_icp_rmse_threshold").default_value(1e-3).help("Rough registration using ICP: rmse threshold for stop").scan<'g', double>();
+    program.add_argument("-fine_icp_max_iter").default_value(150).help("Fine registration using ICP: maximum number of iterations ").scan<'d', int>();
+    program.add_argument("-fine_icp_rmse_threshold").default_value(1e-5).help("Fine registration using ICP: rmse threshold for stop").scan<'g', double>();
+    program.add_argument("-type").default_value("rigid").help("transformation type, can be (rigid, translation), 'rigid' contains 3DoF for rotation, 3FoF for translation, 'translation' only contains 3DoF ");
 
 
-    //try {
-    //    program.parse_args(argc, argv);    // Example: ./main --color orange
+
+    try {
+        program.parse_args(argc, argv);    // Example: ./main --color orange
+    }
+    catch (const std::runtime_error& err) {
+        std::cerr << err.what() << std::endl;
+        std::cerr << program;
+        std::exit(1);
+    }
+
+
+    std::string src_file= program.get<std::string>("-src");
+    std::string dst_file = program.get<std::string>("-dst");
+    double src_reso = program.get<double>("-src_reso");
+    double dst_reso = program.get<double>("-dst_reso");
+    int rough_icp_max_iter = program.get<int>("-rough_icp_max_iter");
+    double rough_icp_rmse_threshold= program.get<double>("-rough_icp_rmse_threshold");
+    int fine_icp_max_iter = program.get<int>("-fine_icp_max_iter");
+    double fine_icp_rmse_threshold = program.get<double>("-fine_icp_rmse_threshold");
+    std::string type = program.get<std::string>("-type");
+    Parameters par;
+    par.src_path_ = src_file;
+    par.ref_path_ = dst_file;
+    par.src_resolution_ = src_reso;
+    par.ref_resolution_ = dst_reso;
+    par.rough_icp_max_iter_ = rough_icp_max_iter;
+    par.rough_icp_rmse_threshold_ = rough_icp_rmse_threshold;
+    par.fine_icp_max_iter_ = fine_icp_max_iter;
+    par.fine_icp_rmse_threshold_ = fine_icp_rmse_threshold;
+    par.type_ = type;
+
+    DSM_REG_v1(par);
+
+    
+
+
+    //if (argc != 4) {
+    //    std::cout << "USAGE: reg.exe [0: LiDAR-SAT, 1:small-scale SAT-SAT,2: general(high time cost), 3: no registration, only apply init transform to src_dsm, 4: only estimation translation ] [reference_dsm_path] source_dsm_path init_trans_file" << std::endl;
+    //    return 0;
     //}
-    //catch (const std::runtime_error& err) {
-    //    std::cerr << err.what() << std::endl;
-    //    std::cerr << program;
-    //    std::exit(1);
+    //string mode = argv[1];
+    //if (mode == "0") {
+    //    LIDARDSM_REG(argv[2], argv[3]);
     //}
+    //else if (mode == "1") {
+    //    SATDSM_REG(argv[2], argv[3]);
+    //}
+    //else if (mode == "2") {
+    //    DSM_REG_v1(argv[2], argv[3]);
+    //}
+    //else if (mode == "3") {
+    //    std::string dsm_src_path = argv[2];
+    //    std::string init_file = argv[3];
+    //    std::string dsm_out_name = fs::path(dsm_src_path).filename().string();
+    //    dsm_out_name = dsm_out_name.replace(dsm_out_name.find(".tif"), sizeof(".tif") - 1, "_reg.tif");
+    //    std::string dsm_out_path = fs::path(dsm_src_path).replace_filename(dsm_out_name).string();
 
+    //    double rotation[9];
+    //    double translation[3];
+    //    double offset[2];
 
-    //std::string src_file= program.get<std::string>("-src");
-    //std::string dst_file = program.get<std::string>("-dst");
-    //int a = 0;
+    //    std::ifstream file(init_file);
+    //    std::string str;
+    //    std::getline(file, str);
+    //    offset[0] = std::stod(str);
+    //    std::getline(file, str);
+    //    offset[1] = std::stod(str);
+    //    std::getline(file, str);
+    //    rotation[0] = std::stod(str);
+    //    std::getline(file, str);
+    //    rotation[1] = std::stod(str);
+    //    std::getline(file, str);
+    //    rotation[2] = std::stod(str);
+    //    std::getline(file, str);
+    //    rotation[3] = std::stod(str);
+    //    std::getline(file, str);
+    //    rotation[4] = std::stod(str);
+    //    std::getline(file, str);
+    //    rotation[5] = std::stod(str);
+    //    std::getline(file, str);
+    //    rotation[6] = std::stod(str);
+    //    std::getline(file, str);
+    //    rotation[7] = std::stod(str);
+    //    std::getline(file, str);
+    //    rotation[8] = std::stod(str);
+    //    std::getline(file, str);
+    //    translation[0] = std::stod(str);
+    //    std::getline(file, str);
+    //    translation[1] = std::stod(str);
+    //    std::getline(file, str);
+    //    translation[2] = std::stod(str);
 
+    //    DSM_TRANSFORM dsm_trans(dsm_src_path, dsm_out_path, rotation, translation, offset[0], offset[1]);
+    //    dsm_trans.START();
 
-    if (argc != 4) {
-        std::cout << "USAGE: reg.exe [0: LiDAR-SAT, 1:small-scale SAT-SAT,2: general(high time cost), 3: no registration, only apply init transform to src_dsm, 4: only estimation translation ] [reference_dsm_path] source_dsm_path init_trans_file" << std::endl;
-        return 0;
-    }
-    string mode = argv[1];
-    if (mode == "0") {
-        LIDARDSM_REG(argv[2], argv[3]);
-    }
-    else if (mode == "1") {
-        SATDSM_REG(argv[2], argv[3]);
-    }
-    else if (mode == "2") {
-        DSM_REG_v1(argv[2], argv[3]);
-    }
-    else if (mode == "3") {
-        std::string dsm_src_path = argv[2];
-        std::string init_file = argv[3];
-        std::string dsm_out_name = fs::path(dsm_src_path).filename().string();
-        dsm_out_name = dsm_out_name.replace(dsm_out_name.find(".tif"), sizeof(".tif") - 1, "_reg.tif");
-        std::string dsm_out_path = fs::path(dsm_src_path).replace_filename(dsm_out_name).string();
-
-        double rotation[9];
-        double translation[3];
-        double offset[2];
-
-        std::ifstream file(init_file);
-        std::string str;
-        std::getline(file, str);
-        offset[0] = std::stod(str);
-        std::getline(file, str);
-        offset[1] = std::stod(str);
-        std::getline(file, str);
-        rotation[0] = std::stod(str);
-        std::getline(file, str);
-        rotation[1] = std::stod(str);
-        std::getline(file, str);
-        rotation[2] = std::stod(str);
-        std::getline(file, str);
-        rotation[3] = std::stod(str);
-        std::getline(file, str);
-        rotation[4] = std::stod(str);
-        std::getline(file, str);
-        rotation[5] = std::stod(str);
-        std::getline(file, str);
-        rotation[6] = std::stod(str);
-        std::getline(file, str);
-        rotation[7] = std::stod(str);
-        std::getline(file, str);
-        rotation[8] = std::stod(str);
-        std::getline(file, str);
-        translation[0] = std::stod(str);
-        std::getline(file, str);
-        translation[1] = std::stod(str);
-        std::getline(file, str);
-        translation[2] = std::stod(str);
-
-        DSM_TRANSFORM dsm_trans(dsm_src_path, dsm_out_path, rotation, translation, offset[0], offset[1]);
-        dsm_trans.START();
-
-    }
-    else if (mode == "4") {
-        SATDSM_REG_only_translation(argv[2], argv[3]);
-    }
+    //}
+    //else if (mode == "4") {
+    //    SATDSM_REG_only_translation(argv[2], argv[3]);
+    //}
 
 
 
