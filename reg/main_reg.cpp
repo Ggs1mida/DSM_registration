@@ -690,35 +690,36 @@ public:
         fine_translation_[1] = 0.0;
         fine_translation_[2] = 0.0;
 
-        double transform[6];
+        double src_transform[6]; // [x_origin,x_gsd,_,y_origin,_,-y_gsd]
+        double ref_transform[6];
         int xSize, ySize;
 
         GDALAllRegister();
         pdriver_ = GetGDALDriverManager()->GetDriverByName("GTiff");
         ref_dataset_ = (GDALDataset*)GDALOpen(par_.ref_path_.c_str(), GA_ReadOnly);
-        ref_dataset_->GetGeoTransform(transform);
+        ref_dataset_->GetGeoTransform(ref_transform); 
         xSize = ref_dataset_->GetRasterXSize();
         ySize = ref_dataset_->GetRasterYSize();
         ref_width_ = xSize;
         ref_height_ = ySize;
         ref_utm_bbox_[0] = 0.0;
-        ref_utm_bbox_[1] = 0.0 + (xSize - 1) * transform[1];
-        ref_utm_bbox_[2] = 0.0 - (ySize - 1) * transform[1];
+        ref_utm_bbox_[1] = 0.0 + (xSize - 1) * ref_transform[1];
+        ref_utm_bbox_[2] = 0.0 + (ySize - 1) * ref_transform[5];
         ref_utm_bbox_[3] = 0.0;
-        GLOBAL_OFFSET_X_m_ = transform[0];
-        GLOBAL_OFFSET_Y_m_ = transform[3];
+        GLOBAL_OFFSET_X_m_ = ref_transform[0];
+        GLOBAL_OFFSET_Y_m_ = ref_transform[3];
 
 
         src_dataset_ = (GDALDataset*)GDALOpen(par_.src_path_.c_str(), GA_ReadOnly);
-        src_dataset_->GetGeoTransform(transform);
+        src_dataset_->GetGeoTransform(src_transform);
         xSize = src_dataset_->GetRasterXSize();
         ySize = src_dataset_->GetRasterYSize();
         src_width_ = xSize;
         src_height_ = ySize;
-        src_utm_bbox_[0] = transform[0]- GLOBAL_OFFSET_X_m_;
-        src_utm_bbox_[1] = transform[0]- GLOBAL_OFFSET_X_m_ + (xSize - 1) * transform[1];
-        src_utm_bbox_[2] = transform[3]- GLOBAL_OFFSET_Y_m_ - (ySize - 1) * transform[1];
-        src_utm_bbox_[3] = transform[3]- GLOBAL_OFFSET_Y_m_;
+        src_utm_bbox_[0] = src_transform[0]- GLOBAL_OFFSET_X_m_;
+        src_utm_bbox_[1] = src_transform[0]- GLOBAL_OFFSET_X_m_ + (xSize - 1) * src_transform[1];
+        src_utm_bbox_[2] = src_transform[3]- GLOBAL_OFFSET_Y_m_ + (ySize - 1) * src_transform[5];
+        src_utm_bbox_[3] = src_transform[3]- GLOBAL_OFFSET_Y_m_;
 
         aoi_utm_bbox_[0] = max(ref_utm_bbox_[0], src_utm_bbox_[0]);
         aoi_utm_bbox_[1] = min(ref_utm_bbox_[1], src_utm_bbox_[1]);
@@ -732,6 +733,19 @@ public:
 
         ref_band_ = ref_dataset_->GetRasterBand(1);
         src_band_ = src_dataset_->GetRasterBand(1);
+
+        std::cout << "################ Dataset information ################### " << std::endl;
+        std::cout << "Global UTM offset (x,y):\n" << GLOBAL_OFFSET_X_m_ << "," << GLOBAL_OFFSET_Y_m_ << std::endl << std::endl;
+        std::cout << "src tfw: offset_x:\n" << src_transform[0] << ",offset_y:" << src_transform[3] << ",x_gsd:" << src_transform[1] << ",y_gsd:" << src_transform[5] << std::endl << std::endl;
+        std::cout << "src height:" << src_height_ << ",width:" << src_width_ << std::endl << std::endl;
+        std::cout << "src offseted bbox (xmin,xmax,ymin,ymax):\n" << src_utm_bbox_[0] << "," << src_utm_bbox_[1] << "," << src_utm_bbox_[2] << "," << src_utm_bbox_[3] << std::endl << std::endl;
+        std::cout << "ref tfw: offset_x:\n" << ref_transform[0] << ",offset_y:" << ref_transform[3] << ",x_gsd:" << ref_transform[1] << ",y_gsd:" << ref_transform[5] << std::endl << std::endl;
+        std::cout << "ref height:" << ref_height_ << ",width:" << ref_width_ << std::endl << std::endl;
+        std::cout << "ref offseted bbox (xmin,xmax,ymin,ymax):\n" << ref_utm_bbox_[0] << "," << ref_utm_bbox_[1] << "," << ref_utm_bbox_[2] << "," << ref_utm_bbox_[3] << std::endl << std::endl;
+        std::cout << "aoi offseted bbox (xmin,xmax,ymin,ymax):\n" << aoi_utm_bbox_[0] << "," << aoi_utm_bbox_[1] << "," << aoi_utm_bbox_[2] << "," << aoi_utm_bbox_[3] << std::endl << std::endl;
+
+
+
   //      std::cout << "################ Parameters ################### " << std::endl;
 		//std::cout << "ICP point-to-plane: " << par.plane_or_not_ << std::endl;
   //      std::cout << "Rough Align Paras: "<< std::endl;
@@ -769,6 +783,8 @@ public:
     double rough_rotation_[9];
     double rough_translation_[3];
     vector<vector<double>> rough_translations_;
+
+
     // for fine align
     Eigen::Matrix4d T_fine_;
     double fine_translation_[3];
@@ -1265,94 +1281,6 @@ public:
         MULTI_ICP(rough_src_pts_, T_rough_,par_.type_,par_.search_half_size_pixel_, par_.rough_icp_percentage_threshold_, par_.multi_or_not_, par_.rough_icp_max_iter_, par_.rough_icp_rmse_threshold_,
             par_.plane_or_not_, rough_rmse,rough_icp_log);
 
-        // If no brute force search on X_Y plane, continue to the fine registration
-  //      if (!par_.brute_force_search_or_not_) {
-  //          rough_translations_.clear();
-  //          vector<double> trans;
-  //          trans.push_back(rough_translation_[0]);
-  //          trans.push_back(rough_translation_[1]);
-  //          trans.push_back(rough_translation_[2]);
-  //          rough_translations_.push_back(trans);
-  //          return;
-  //      }
-  //      // Brute-Force search on x-y plane
-		//std::cout << "Brute-Force seach on XY-plane" << std::endl;
-  //      string xy_search_log = dir_path + "xysearch.log";
-  //      vector<double> rough_grid_rmses;
-  //      vector<pair<int, int>> rough_grid_idx;
-  //      vector<pair<double, double>> rough_trans_xy_list;
-  //      double rot[9];
-  //      double grid_trans[3];
-  //      gs::initDiagonal(rot);
-  //      grid_trans[0] = 0.0;
-  //      grid_trans[1] = 0.0;
-  //      grid_trans[2] = 0.0;
-  //      grid_x = (int)((par_.xmax_m_ - par_.xmin_m_) / par_.rough_step_m_) + 1;
-  //      grid_y = (int)((par_.ymax_m_ - par_.ymin_m_) / par_.rough_step_m_) + 1;
-  //      std::vector<CORR> corrs;
-  //      Eigen::MatrixXd X, Y;
-  //      Eigen::VectorXd W;
-  //      double** corr_rmses = new double*[grid_y];
-  //      for (int i = 0; i < grid_y; ++i) {
-  //          corr_rmses[i] = new double[grid_x];
-  //      }
-  //      ofstream ofs;
-  //      double corr_rmse = 0;
-  //      if (dir_path != "" && par_.verbose_ > 0) {
-  //          ofs.open(xy_search_log);
-  //      }
-  //      // first apply rough_trans to rough_src_pts_
-		//std::cout << "Search grid(x,y) : " << grid_x << "," << grid_y << std::endl;
-  //      update_ptcloud(rough_src_pts_, rough_rotation_, rough_translation_, 0, 0, 0, 0);
-  //      for (int cnt_x = 0; cnt_x < grid_x; ++cnt_x) {
-  //          for (int cnt_y = 0; cnt_y < grid_y; ++cnt_y) {
-  //              if (cnt_x == 0 && cnt_y == 0) {
-  //                  grid_trans[0] = par_.xmin_m_;
-  //                  grid_trans[1] = par_.ymin_m_;
-  //              }
-  //              else if (cnt_y == 0) {
-  //                  grid_trans[0] = par_.rough_step_m_;
-  //                  grid_trans[1] = -(grid_y - 1) * par_.rough_step_m_;
-  //              }
-  //              else {
-  //                  grid_trans[0] = 0.0;
-  //                  grid_trans[1] = par_.rough_step_m_;
-  //              }
-  //              rough_trans_xy_list.push_back(make_pair(par_.xmin_m_+cnt_x* par_.rough_step_m_, par_.ymin_m_ + cnt_y * par_.rough_step_m_));
-  //              rough_grid_idx.push_back(make_pair(cnt_x, cnt_y));
-  //              update_ptcloud(rough_src_pts_, rot, grid_trans, 0, 0, 0, 0);
-  //              FIND_MULTI_LINK_CORRESPONDENCE(rough_src_pts_, X, Y, W, par_.search_half_size_pixel_, par_.rough_icp_percentage_threshold_, par_.multi_or_not_, par_.rough_icp_max_iter_, corr_rmse, par_.plane_or_not_);
-  //              //FIND_MULTI_LINK_CORRESPONDENCE(rough_src_pts_, corrs, par_.search_half_size_pixel_, par_.rough_icp_percentage_threshold_, par_.multi_or_not_, par_.rough_icp_max_iter_, corr_rmse, par_.plane_or_not_);
-  //              rough_grid_rmses.push_back(corr_rmse);
-  //              corr_rmses[cnt_y][cnt_x] = corr_rmse;
-  //              //cout << setprecision(11) << "Grid X,Y: " << cnt_x << "," << cnt_y << ", RMSE: " << corr_rmse << std::endl;
-  //              if (dir_path != "" && par_.verbose_ > 0) { ofs << setprecision(11) << cnt_x << " " << cnt_y << " " << corr_rmse << std::endl; }
-  //          }
-  //      }
-  //      if (dir_path != "" && par_.verbose_ > 0) { ofs.close(); }
-  //      
-  //      // Non-max supression
-  //      vector<pair<int, int>> mins_ids;
-  //      non_min_suppresion(grid_x, grid_y, corr_rmses, par_.rough_step_min_resolution_, mins_ids);
-  //      for (int i = 0; i < grid_y; ++i) {
-  //          delete[] corr_rmses[i];
-  //      }
-  //      delete[] corr_rmses;
-
-  //      // Generate Rough translation candidate
-  //      for (int i = 0; i < mins_ids.size(); ++i) {
-		//	std::cout << "Top #" << i << " grid (x,y): " << mins_ids[i].second << "," << mins_ids[i].first << std::endl;
-  //          vector<double> trans;
-  //          trans.push_back(par_.xmin_m_ + mins_ids[i].second * par_.rough_step_m_+rough_translation_[0]);
-  //          trans.push_back(par_.ymin_m_ + mins_ids[i].first * par_.rough_step_m_+rough_translation_[1]);
-  //          trans.push_back(rough_translation_[2]);
-  //          rough_translations_.push_back(trans);
-		//	std::cout << "Rough Align Translation candidate: " << std::endl;
-		//	std::cout << "#" << i << ": " << trans[0] << "," << trans[1] << "," << trans[2] << std::endl;
-		//	if (i >= par_.rough_num_mins_-1) {
-		//		break;
-		//	}
-  //      }
     }
 
     void STEP2_1_COLLECT_TILE_INFOS() {
