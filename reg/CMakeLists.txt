@@ -6,6 +6,10 @@ include_directories( ../src)
 find_package(Eigen3 CONFIG REQUIRED)
 target_link_libraries(${targetName} PRIVATE Eigen3::Eigen)
 
+#nanoflann
+find_package(nanoflann CONFIG REQUIRED)
+target_link_libraries(${targetName} PRIVATE nanoflann::nanoflann)
+
 #GDAL
 find_package(GDAL REQUIRED)
 target_include_directories(${targetName} PRIVATE ${GDAL_INCLUDE_DIRS})
